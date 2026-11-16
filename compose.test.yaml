@@ -1,0 +1,118 @@
+# Always use a separate project: -p vault-test. Never share normal installation data.
+name: vault-test
+
+x-test-environment: &test-environment
+  OPENAI_API_KEY: "test-placeholder-never-a-real-key"
+  OPENAI_CHAT_MODEL: "gpt-5.4-mini-2026-03-17"
+  OPENAI_EMBEDDING_MODEL: "text-embedding-3-small"
+  OPENAI_EMBEDDING_DIMENSIONS: "1536"
+  POSTGRES_DB: "vault_test"
+  POSTGRES_USER: "vault_test"
+  POSTGRES_PASSWORD: "test_only_password"
+  REDIS_URL: "redis://redis:6379/1"
+  STORAGE_BACKEND: "local"
+  VECTOR_BACKEND: "pgvector"
+  LOCAL_STORAGE_DIR: "/app/data/uploads"
+  API_PORT: "4000"
+  UI_PORT: "4005"
+  MAX_UPLOAD_BYTES: "20971520"
+  MAX_PDF_PAGES: "500"
+  MAX_DOCX_EXPANDED_BYTES: "104857600"
+  MAX_DOCX_ENTRIES: "2000"
+  MAX_EXTRACTED_TEXT_BYTES: "2097152"
+  MAX_EXTRACTED_TOKENS: "100000"
+  MAX_DOCUMENT_CHUNKS: "500"
+  CHUNK_SIZE_TOKENS: "800"
+  CHUNK_OVERLAP_TOKENS: "120"
+  EMBEDDING_BATCH_SIZE: "32"
+  EMBEDDING_BATCH_MAX_TOKENS: "32000"
+  ANALYSIS_GROUP_MAX_TOKENS: "12000"
+  ANALYSIS_MAX_OUTPUT_TOKENS: "768"
+  SUMMARY_MAX_OUTPUT_TOKENS: "1500"
+  EVIDENCE_REVIEW_MAX_OUTPUT_TOKENS: "4096"
+  INSIGHT_MAX_OUTPUT_TOKENS: "3072"
+  INSIGHT_MAX_VISIBLE_TOKENS: "600"
+  OPENAI_REVIEW_REASONING_EFFORT: "low"
+  MAX_DOCUMENT_AI_CALLS: "64"
+  PLANNER_MAX_OUTPUT_TOKENS: "256"
+  QUESTION_MAX_CHARS: "4000"
+  QUESTION_MAX_TOKENS: "1000"
+  CHAT_HISTORY_MAX_TURNS: "4"
+  CHAT_HISTORY_MAX_TOKENS: "2000"
+  RETRIEVAL_CANDIDATES: "16"
+  RETRIEVAL_MAX_CHUNKS: "8"
+  RETRIEVAL_MAX_TOKENS: "6400"
+  CHAT_PROMPT_MAX_TOKENS: "12000"
+  CHAT_MAX_OUTPUT_TOKENS: "1200"
+  OPENAI_EMBEDDING_TIMEOUT_SECONDS: "15"
+  OPENAI_GENERATION_TIMEOUT_SECONDS: "30"
+  CHAT_TIMEOUT_SECONDS: "90"
+  CELERY_WORKER_CONCURRENCY: "2"
+  API_MAX_CONCURRENT_AI_REQUESTS: "2"
+  PROCESSING_MAX_ATTEMPTS: "3"
+  PROCESSING_DEADLINE_SECONDS: "1800"
+  OPENAI_BASE_URL: "http://provider-stub:4010/v1"
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+
+services:
+  provider-stub:
+    build:
+      context: .
+      target: test
+    command: [python, tests/fixtures/provider_stub.py]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:4010/health', timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+  postgres:
+    environment:
+      POSTGRES_DB: vault_test
+      POSTGRES_USER: vault_test
+      POSTGRES_PASSWORD: test_only_password
+  storage-init:
+    environment:
+      LOCAL_STORAGE_DIR: /app/data/uploads
+    volumes: !override
+      - uploads:/app/data/uploads
+  migrate:
+    environment: *test-environment
+    volumes: !override
+      - uploads:/app/data/uploads
+  api:
+    environment: *test-environment
+    volumes: !override
+      - uploads:/app/data/uploads
+    ports: !override []
+    depends_on:
+      provider-stub:
+        condition: service_healthy
+  worker:
+    environment: *test-environment
+    volumes: !override
+      - uploads:/app/data/uploads
+    depends_on:
+      provider-stub:
+        condition: service_healthy
+  ui:
+    environment:
+      API_BASE_URL: http://api:8000
+      PUBLIC_API_BASE_URL: http://api:8000
+    ports: !override []
+  test:
+    profiles: [test]
+    build:
+      context: .
+      target: test
+    environment:
+      <<: *test-environment
+      VAULT_INTEGRATION_TESTS: "1"
+    volumes:
+      - uploads:/app/data/uploads
+    depends_on:
+      api:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    init: true

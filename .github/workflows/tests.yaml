@@ -1,0 +1,41 @@
+name: Provider-free checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      OPENAI_API_KEY: test-placeholder-never-a-real-key
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build locked test images
+        run: docker compose -p vault-test -f compose.yaml -f compose.test.yaml --profile test build
+      - name: Lint, formatting and types
+        run: |
+          docker compose -p vault-test -f compose.yaml -f compose.test.yaml --profile test run --rm --no-deps test ruff check .
+          docker compose -p vault-test -f compose.yaml -f compose.test.yaml --profile test run --rm --no-deps test ruff format --check .
+          docker compose -p vault-test -f compose.yaml -f compose.test.yaml --profile test run --rm --no-deps test mypy app ui scripts
+      - name: Start isolated application and infrastructure
+        run: docker compose -p vault-test -f compose.yaml -f compose.test.yaml --profile test up -d --wait api worker ui
+      - name: Unit, API, integration and backend flows
+        run: |
+          docker compose -p vault-test -f compose.yaml -f compose.test.yaml --profile test run --rm --no-deps test pytest -q
+          docker compose -p vault-test -f compose.yaml -f compose.test.yaml exec -T api alembic check
+      - name: Failure diagnostics
+        if: failure()
+        run: docker compose -p vault-test -f compose.yaml -f compose.test.yaml logs --tail=100
+      - name: Stop isolated services
+        if: always()
+        run: docker compose -p vault-test -f compose.yaml -f compose.test.yaml down
