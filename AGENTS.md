@@ -1,0 +1,47 @@
+# AGENTS.md: AI Assistant Operational Guide
+
+## Source of truth
+
+**[CASE_STUDY.md](./CASE_STUDY.md) is the absolute source of truth for repository requirements.** Read it before interpreting product scope. If another document conflicts with the brief, align that document with the brief. Distinguish repository design choices from requirements, recommendations, and bonuses in the case study. Never edit the brief merely to make another document appear consistent.
+
+Keep context focused: read the relevant documentation and implementation files for the task rather than the entire codebase.
+
+At the start of a fresh session, read [docs/HANDOFF.md](./docs/HANDOFF.md) for current phase, next tasks, open decisions, and verification status; follow its reading order and confirm the actual working tree. Keep it current at meaningful phase/session handoffs.
+
+## Documentation index
+
+| Topic | Reference | Purpose |
+| :--- | :--- | :--- |
+| Case study | [CASE_STUDY.md](./CASE_STUDY.md) | Authoritative objectives, requirements, stack options, evaluation, deliverables, and bonuses |
+| Session handoff | [docs/HANDOFF.md](./docs/HANDOFF.md) | Current execution status, fresh-session reading order, planning checklist, and local setup and review state |
+| Delivery plan | [PLAN.md](./PLAN.md) | Milestone dependencies, exit gates, documentation ownership and review state |
+| Product scope | [PRODUCT.md](./PRODUCT.md) | Full requirements/evaluation mapping, selected stack, acceptance criteria, and core/bonus boundaries |
+| AI workflow | [AI_USAGE.md](./AI_USAGE.md) | Mandatory agent guardrails, subagent delegation workflow, proposed prompts, and evidence/validation rules |
+| Development evidence | [AI_DEV_JOURNAL.md](./AI_DEV_JOURNAL.md) | Actual AI contributions, corrections, validation, and explicitly planned milestones |
+| System design | [docs/system_design.md](./docs/system_design.md) | Consolidated HLD/LLD for review; design authority once finalized, subordinate to case-study requirements |
+| Architecture | [docs/architecture.md](./docs/architecture.md) | Concise component/operating overview linking to detailed design |
+| Testing and release | [docs/testing_strategy.md](./docs/testing_strategy.md) | Planned unit/API/integration/E2E/AI validation, phase exit checks, and local handover gates |
+| Debugging | [docs/debugging.md](./docs/debugging.md) | Read-only document/attempt diagnosis, safe log correlation, known-usage limits, and offline-first verification |
+| Coding standards | [docs/coding_standards.md](./docs/coding_standards.md) | Async I/O, validation/errors, database/vector conventions, adapter boundaries, environment/dependency conventions, and pytest/integration verification |
+
+## Operational rules
+
+1. Before implementing features, read CASE_STUDY.md and PRODUCT.md, then follow AI_USAGE.md. Consult docs/system_design.md for the relevant contracts/data flow and docs/architecture.md for orientation and docs/coding_standards.md for implementation and verification conventions. Design records do not certify implemented behavior; respect their review status and the user-authorized phase. Preserve all five objectives: AI-first RAG backend; effective AI coding-tool use; intelligent processing/conversation; async pipelines/monitoring; product thinking and practical design.
+2. Use the selected **Python/FastAPI, PostgreSQL + pgvector, Celery + Redis, OpenAI chat/embeddings, PyMuPDF (PDF), and python-docx (DOCX)** stack. Start with local file storage. The brief permits alternative queues, parsers, AI providers, and S3-compatible storage; FastAPI is recommended and vector integration is a bonus. Document stack changes and assumptions in README. LangChain/LlamaIndex are highly recommended; this project selects focused langchain-openai and langchain-text-splitters utilities with application-owned orchestration. Use API docs and pytest as recommended.
+3. Keep core scope complete: intelligent upload and async analysis; document upload/retrieval/insights APIs; start-session, ask-question, history, and multi-turn chat; document-statistics and processing-metrics APIs. Ground answers in retrieved evidence with citations and handle insufficient evidence explicitly.
+4. Preserve all storage requirements: metadata/status, AI summaries/insights, conversations/history, messages with context/citations, processing metrics/history, and system performance data. Track failures honestly and consider scale to thousands of documents.
+5. Keep the brief's equal evaluation weighting: **AI-First Development 33%, Product Thinking 33%, Technical Implementation 33%**. Consult PRODUCT.md for every subcriterion. Cover coding-tool use, integration, prompts, automation, innovation; UX, prioritization, errors, usability, architecture; code quality, performance, API design, async work, and documentation.
+6. Prioritize working core features. Frontend/dashboard, multi-document chat, follow-up suggestions, summary customization, categorization/tags, sentiment/advanced insights, comparative analysis, real-time updates, streaming, caching, comprehensive tests, and extra production features are optional/bonus. Required monitoring APIs and basic AI insights remain core even though advanced monitoring/insights can earn bonuses.
+7. Verify deliverables: working backend, source repository, README setup and architecture with assumptions, AI_USAGE.md or equivalent workflow evidence, and **required document-chat demo**. A frontend is not required by the brief; the project has selected a minimal Streamlit HTTP client for the demo. Follow PRODUCT.md for its bounded scope, implement it after the first working backend flow, and keep Swagger and APIs usable independently.
+8. Record major AI-assisted work, architectural decisions, corrections, and validation in AI_DEV_JOURNAL.md. Separate proposed work from implemented/tested behavior. Never invent speedups, test results, historical tool use, or guarantees that prompts eliminate hallucinations. Run checks appropriate to actual changes and state their limits. For processing failures, follow [docs/debugging.md](./docs/debugging.md): inspect saved metadata/attempts and safe diagnostics before deterministic reproduction or authorized paid verification. Preserve failed records and request identities; do not infer an older generic failure's cause from newer diagnostics or rerun unchanged paid suites automatically.
+9. Preserve the architecture’s replaceable integration boundaries while implementing one selected adapter per capability. Provide a locally hosted Docker Compose stack with reproducible Python dependencies, shared/persistent volumes, and migrations; OpenAI remains external. Commit placeholder `.env.example`, ignore real `.env` files in Git/build contexts, and validate configuration centrally. Keep design review status and unverified dependency/runtime assumptions explicit. Do not infer implementation authorization from document updates.
+
+10. Use subagents for independent analysis, exploration, review, or implementation when parallel work reduces the main session's context or critical-path time. Keep small, tightly coupled tasks in the main session. Follow the delegation workflow in AI_USAGE.md: bounded task briefs, minimal context, explicit file ownership, concise evidence-based handoffs, and parent integration/verification. Delegate only within the user's authorized scope and available tool/concurrency limits; subagents inherit the same source of truth and guardrails.
+
+11. docs/system_design.md contains the consolidated HLD/LLD for user review. It owns detailed design contracts within CASE_STUDY.md requirements; record review/finalization status and date honestly before implementation. Keep architecture.md concise and linked to it. Align scope, standards, README and the environment example without duplicating contracts; synchronize consequential later changes. Implementation was authorized on 2026-11-15; consult HANDOFF for the current milestone and verified state.
+
+12. Follow docs/testing_strategy.md at each development phase and before final handover. Finalize phase acceptance criteria and runnable checks during planning. Verify changed behavior and integrated boundaries, distinguish mocked tests from real-service/live-AI results, and record failures/skips honestly. A phase or release is not verified merely because code is written or a subagent reports success.
+
+13. Preserve the personal self-hosting model: anyone runs an independent copy with their own key, persistent local originals/vectors/chat, and external OpenAI access. Use the design defaults for host ports 4000/4005, configurable validated budgets, visible extraction limitations and document-scoped membership. Keep future OCR/formats/multi-document support behind focused boundaries; do not implement deferred scope without authorization.
+
+14. When the user later authorizes commits/push, create small coherent commits in dependency order following the delivery milestones; do not combine the whole repository into one commit or fabricate historical chronology. Inspect the existing index and working tree first, preserve unrelated changes, validate each selected slice and review the staged diff for secrets/private artifacts. Never stage `.private/`, real environment files, data, recordings or backups. Commit/push only when explicitly authorized; this rule does not itself authorize either action.
