@@ -24,13 +24,15 @@
 
 [Current evaluation](evaluation_current.md) separates provider-free tests, live-provider observations, frozen-context checks and operational evidence. Run the documented checks after consequential changes; a written design or mock result is not live semantic evidence. Preserve failed turns and historical results rather than silently rewriting them after a fix.
 
+Clean committed-source checkpoint: a `git archive` export of `f252961` (160 tracked files, no `.env`, `.git`, local data or private artifacts) passed Docker build, API/worker/UI startup, all 1,183 tests, Ruff lint/format, mypy and Alembic drift checks. The run used fresh isolated volumes, no host ports and a local provider substitute. Its test project was removed afterward; the normal application/data were preserved. Docker layers were cached; this was not a remote clone or uncached-download check. Later documentation-only polish does not change the verified application source.
+
 Observed platform: macOS Apple Silicon with Linuxarm64 containers; Docker Engine29.9.2, Compose5.6.1 and image Python3.12.16/uv0.13.8. Other platforms are targets only. Restart persistence and isolated transport/recovery checks have local evidence; uncached downloads, remote CI execution, thousand-document load and broader platform compatibility are not certified.
 
 Generation is pinned to `gpt-5.4-mini-2026-03-17`; embeddings use `text-embedding-3-small`/1536dimensions. Current source versions and exact evaluation recipes belong in [current evaluation](evaluation_current.md). Existing analyses/history retain their original versions; changing prompts does not regenerate them or require re-embedding.
 
 ## Next work and handover
 
-- Owner/manual source review and a document-chat recording remain separate from automated checks; see [demo.md](demo.md).
+- Manual source review and delivery of the required document-chat demonstration remain separate from automated checks; see [demo.md](demo.md). The brief does not prescribe a video format. The walkthrough is not a recording.
 - Continue held-out relevance, causal-support, qualification and partial-scope evaluation. Neither valid source IDs nor model review proves entailment or prevents all hallucinations.
 - OCR/images, additional formats, multi-document chat, SSE, caching, cloud storage and public hosting remain deferred. Their adapter boundaries are documented; do not implement them merely because they are extensible.
 - Preserve real environment files and retained data. Never reset volumes, buy unchanged paid reruns or publish Git changes without applicable authorization. Follow the logical-commit rule in AGENTS.md and keep private artifacts/secrets out of source delivery.

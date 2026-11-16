@@ -6,7 +6,7 @@
 
 **Initial audit, 2026-11-13:** the repository inventory contained documentation and a license, with no application implementation or tests found. Earlier journal claims of implemented features/tests, percentage speedups and complete hallucination prevention lacked evidence and were removed. That audit did not certify a working backend or demo. Historical Cursor/Copilot use was not verified.
 
-**Latest checkpoint, 2026-11-15:** final selected source passed 730 provider-free tests, static/schema checks and local deployment. The bounded narrative run passed four automatic chat checks and nine assistant source-review checks; human approval remains false. Unsuccessful editorial experiments were removed from normal processing, with evidence preserved. See HANDOFF and the final entry for exact scope and cost.
+**Historical development record:** entries below describe the versions and checks observed at each checkpoint, not the current release status. [Current evaluation](docs/evaluation_current.md) owns the latest verification summary and limitations; [AI_USAGE.md](AI_USAGE.md) explains the workflow and prompt rationale. Some historical references point to reports that have since been consolidated; those summaries do not distribute raw local artifacts. This journal is not an exhaustive record of every subsequent maintenance task.
 
 ## 2026-11-13 — Case study documentation alignment
 

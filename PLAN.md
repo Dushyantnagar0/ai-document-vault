@@ -1,6 +1,6 @@
 # Delivery Plan
 
-**2026-11-16: core implementation includes a bounded claim/source review pipeline.** Current validation separates deterministic orchestration, frozen-evidence generation, saved-chunk analysis and actual service conversations. [HANDOFF](docs/HANDOFF.md) owns exact deployment/checkpoints; [evaluation report](docs/evaluation_current.md) retains failed attempts and semantic limitations. Human review and committed-checkout handover remain open.
+**2026-11-16: core implementation includes a bounded claim/source review pipeline.** Current validation separates deterministic orchestration, frozen-evidence generation, saved-chunk analysis and actual service conversations. [HANDOFF](docs/HANDOFF.md) owns exact deployment/checkpoints; [evaluation report](docs/evaluation_current.md) retains failed attempts and semantic limitations. Clean committed-source validation passed at `f252961`; manual semantic review and delivery of the document-chat demonstration remain open.
 
 [CASE_STUDY.md](CASE_STUDY.md) governs requirements. [PRODUCT.md](PRODUCT.md) maps scope and evidence. [System design](docs/system_design.md) is the sole detailed HLD/LLD/contracts record; [testing strategy](docs/testing_strategy.md) owns verification commands and thresholds. This roadmap replaces the earlier duplicated design proposal.
 
@@ -20,11 +20,11 @@ M1 precedes M2, M2 precedes M3, M3 precedes M5; M4 instrumentation starts in M2/
 
 ## Current evidence and remaining exits
 
-The current quality phase adds summary-first focused insights, sentence-aware literal sources, claim-level source review, separately bounded persisted audit data, and a migration allowing one repaired draft alongside the review. All twenty core cases have current frozen-evidence generation results; this is not a new full API ingestion/retrieval evaluation. Preserve the cautious owner-follow-up mismatch and all earlier semantic failures.
+The current quality phase adds summary-first focused insights, sentence-aware literal sources, claim-level source review, separately bounded persisted audit data, and a migration allowing one repaired draft alongside the review. The earlier twenty-case core checkpoint, including its owner-follow-up mismatch, is historical evidence for its recorded recipe. The latest ten-case mixed regression and two actual RAG service checks use the recipe and evidence scopes in [current evaluation](docs/evaluation_current.md); they do not constitute a fresh full HTTP ingestion/chat rerun. Preserve earlier failures separately from corrected results.
 
 | Area | Recorded checkpoint | Remaining qualification |
 |---|---|---|
-| Backend/static | Integrated unit/API/real-service regression, Ruff/format/mypy and schema checks; exact latest result in HANDOFF | Remote CI and committed-checkout validation |
+| Backend/static | Clean export of committed revision `f252961`: 1,183 tests, Ruff/format/mypy, Docker startup and schema checks passed with isolated substitute-provider services | Remote CI, remote clone and uncached-download setup unverified |
 | Live AI | Historical 20-case baseline plus versioned narrative checks; failed output/source-review iterations are preserved | Current semantic findings are explicit; no blanket full-suite or human-approval claim |
 | Persistence/operations | Historical restart hash checks and forced-death recovery; new normal-redeploy checks are recorded separately in HANDOFF | Backups, natural recovery latency and every crash scenario unverified |
 | UI/demo/diagrams | Historical live browser/history/source/reload checks and rendered diagrams; current source changes have separate checks | Record actual prompt versions and distinguish live/substitute/read-only evidence |
@@ -60,7 +60,7 @@ Record actual prompt/contribution, corrections, command/results and limitations 
 | architecture | Concise component/operating overview linking to detailed design |
 | PRODUCT | Core/selected/deferred scope, requirement/deliverable/evaluation traceability |
 | testing_strategy | Test layers, fixtures, commands, acceptance thresholds and release procedures |
-| demo | Required document-chat walkthrough, saved factual/follow-up/unsupported examples and their evidence limits |
+| demo | Reproducible document-chat walkthrough and optional generated fixture; demonstration delivered separately |
 | coding_standards | Implementation and verification conventions |
 | README | Status, prerequisites, configuration, setup, examples/demo, tests, lifecycle, troubleshooting and limitations |
 | AI_USAGE / AI_DEV_JOURNAL | Workflow/prompt rationale versus actual contributions/results |
@@ -71,4 +71,4 @@ Keep CASE_STUDY unchanged. Keep detailed contracts in one place. Update design a
 
 ## Current prerequisites and pending evidence
 
-Docker Desktop and the operator-supplied ignored key are configured locally. Host Python was left unchanged; application checks use container Python 3.12. Routine tests and crash/upload-browser checks use a provider substitute. Historical live API evaluation met its recorded automatic gate. Current frozen-evidence, saved-chunk analysis and real-service checks retain their own failures, partial outcomes and assistant reviews. Consult HANDOFF for the latest integrated tests and deployed recipe; earlier regression/deployment/browser checks do not certify later source changes. Human semantic approval remains open. Other platforms, large-collection capacity, GitHub CI, committed-checkout and uncached-download checks remain unexecuted; see HANDOFF.
+Docker Desktop and the operator-supplied ignored key are configured locally. Host Python was left unchanged; application checks use container Python 3.12. Routine tests and crash/upload-browser checks use a provider substitute. Historical live API evaluation met its recorded automatic gate. Current frozen-evidence, saved-chunk analysis and real-service checks retain their own failures, partial outcomes and assistant reviews. Consult HANDOFF for the latest integrated tests and deployed recipe; earlier regression/deployment/browser checks do not certify later source changes. Human semantic approval remains open. A clean export of committed revision `f252961` passed the isolated build/startup/regression/schema checks using cached Docker layers. Other platforms, large-collection capacity, GitHub CI, remote cloning and uncached-download checks remain unverified; see [current evaluation](docs/evaluation_current.md).

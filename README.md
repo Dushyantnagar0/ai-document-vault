@@ -2,7 +2,11 @@
 
 A self-hosted service for document summaries, insights, and natural-language conversations with source citations. Each installation keeps its own data and uses its owner's OpenAI API key.
 
-**Status: core backend implemented; current AI-quality validation is recorded on 2026-11-16.** Analysis freezes the summary before generating additional insights, then checks claim/source selections; chat also reviews supported answers before publication. These checks remain fallible. Open [Swagger](http://localhost:4000/docs) or the [UI](http://localhost:4005); [HANDOFF](./docs/HANDOFF.md) records deployed versions, actual results and remaining limitations.
+**Status: core backend and Streamlit client implemented.** Upload a document, inspect its summary/insights, and ask follow-up questions with source citations. Analysis and chat use evidence review; model judgments remain fallible. See [current evaluation](./docs/evaluation_current.md) for results and limitations.
+
+## Review guide
+
+Start with local setup below, then follow the [document-chat walkthrough](./docs/demo.md). For design, read the [architecture overview](./docs/architecture.md) and [detailed HLD/LLD](./docs/system_design.md). [AI_USAGE.md](./AI_USAGE.md) explains the coding workflow and prompt decisions; [current evaluation](./docs/evaluation_current.md) distinguishes automated tests from live-AI evidence.
 
 ## Run locally
 
@@ -88,9 +92,9 @@ docker compose exec api python -m scripts.evaluate_quality --live
 
 Inspect automatic checks and source-review results separately. The [testing strategy](./docs/testing_strategy.md#core-narrative-quality-check) explains bound review forms, replay, stale versions and costs. Assistant review is not human approval; a valid source ID alone does not prove a useful or correct answer.
 
-Provider-free checks cover source/citation validation, budgets, replay, history and real PostgreSQL/pgvector/Redis/Celery/file boundaries. Ruff, formatting, mypy and schema-drift checks run through the isolated image. A provider substitute establishes orchestration, not live AI quality. [HANDOFF](./docs/HANDOFF.md) records current versions, actual counts, source-review results and qualifications; the [journal](./AI_DEV_JOURNAL.md) preserves failed iterations and usage.
+Provider-free checks cover source/citation validation, budgets, replay, history and real PostgreSQL/pgvector/Redis/Celery/file boundaries. Ruff, formatting, mypy and schema-drift checks run through the isolated image. A provider substitute establishes orchestration, not live AI quality. [Current evaluation](./docs/evaluation_current.md) records versions, counts, source-review results and limitations; the [journal](./AI_DEV_JOURNAL.md) preserves historical AI-assisted iterations.
 
-Historical full API runs and current generation regressions are separately versioned. The ambiguous owner follow-up remains a recorded automatic mismatch when the answer correctly qualifies what the source does not establish; expected facts are not edited to improve counts. Historical normal-restart, hard-kill recovery, browser and fresh-volume source-snapshot checks remain separately qualified. Remote CI, committed-checkout/uncached-download setup, other platforms and thousands-of-documents capacity remain unverified. Neither assistant review nor automatic checks claim human approval.
+A clean export of committed revision `f252961` passed Docker build/startup, all 1,183 tests, lint, formatting, typing and migration-drift checks with fresh isolated volumes and a local provider substitute. It contained no real environment file or local data and used the existing Docker cache. This verifies the exported committed source, not remote cloning, uncached downloads or live-provider quality. Historical API/browser/restart results and current prompt checks have separate scopes in [current evaluation](./docs/evaluation_current.md). Remote CI, other platforms and thousands-of-documents capacity remain unverified; manual semantic review is still required.
 
 Routine tests use a separate Compose project, isolated database/volumes, a placeholder key and a local provider substitute. They do not need a real OpenAI key. Run from the repository root:
 
@@ -192,7 +196,7 @@ This read-only report includes durable attempt stages, safe errors, call reserva
 
 Selected stack: Python/FastAPI, PostgreSQL + pgvector, Celery + Redis, OpenAI chat/embeddings, PyMuPDF, python-docx and local files, with a minimal Streamlit HTTP client. FastAPI owns document APIs and durable acceptance. Workers extract, chunk, embed and analyse documents; PostgreSQL owns durable state and Redis transports tasks. Focused LangChain provider/splitting utilities sit behind application-owned orchestration, budgets and source validation.
 
-[CASE_STUDY.md](./CASE_STUDY.md) governs requirements, including the three 33% evaluation categories and required backend/source/documentation/chat-demo deliverables. Recorded live API, browser and lifecycle evidence supports local review. Human semantic approval and verification from a committed checkout remain separate from the completed local checks.
+[CASE_STUDY.md](./CASE_STUDY.md) governs requirements, including the three 33% evaluation categories and required backend/source/documentation/chat-demo deliverables. Recorded live API, browser, lifecycle and clean committed-source checks have distinct scopes in [current evaluation](./docs/evaluation_current.md). The required document-chat demonstration and manual semantic review remain separate handover activities.
 
 - [Product scope](./PRODUCT.md): requirements, evaluation traceability, selected additions and deferred scope.
 - [Delivery plan](./PLAN.md): milestones and dependencies.
@@ -200,6 +204,6 @@ Selected stack: Python/FastAPI, PostgreSQL + pgvector, Celery + Redis, OpenAI ch
 - [Architecture](./docs/architecture.md): concise component and operating overview.
 - [Testing strategy](./docs/testing_strategy.md): procedures, fixtures and release gates.
 - [Debugging runbook](./docs/debugging.md): read-only diagnosis, safe log correlation and economical verification.
-- [Document-chat demo](./docs/demo.md): short replayable walkthrough, recorded answers and evidence limits.
+- [Document-chat demo](./docs/demo.md): fresh-install walkthrough, optional generated fixture and evidence limits.
 - [AI workflow](./AI_USAGE.md) and [development journal](./AI_DEV_JOURNAL.md): guardrails and actual contributions/results.
-- [Session handoff](./docs/HANDOFF.md): current phase, next work and verification status.
+- [Session handoff](./docs/HANDOFF.md): development continuity and next work; optional for reviewers.

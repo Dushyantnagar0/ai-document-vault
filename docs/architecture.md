@@ -1,6 +1,6 @@
 # Architecture Overview
 
-**2026-11-16: the recorded analysis/chat baseline is deployed locally; subsequent source hardening and its deployment state are tracked explicitly in HANDOFF.** Consult [HANDOFF.md](HANDOFF.md) for running versions and actual checks. Historical automatic scores do not establish semantic acceptance of these changes.
+**Implemented architecture, reconciled 2026-11-16.** [Current evaluation](evaluation_current.md) records the verified source/prompt versions, operational checks and remaining limitations. [HANDOFF.md](HANDOFF.md) supports development continuity.
 
 [CASE_STUDY.md](../CASE_STUDY.md) governs requirements. [system_design.md](system_design.md) owns detailed HLD/LLD, diagrams, APIs, schemas, settings, recovery and capacity assumptions. [PRODUCT.md](../PRODUCT.md) maps scope; [PLAN.md](../PLAN.md) orders delivery; [testing_strategy.md](testing_strategy.md) defines evidence. This overview does not duplicate those contracts.
 
