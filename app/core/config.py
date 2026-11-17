@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     # limits below: https://developers.openai.com/api/docs/models/gpt-6.1-sol.md
     SOURCE_ANSWER_MODEL: ClassVar[str] = "gpt-6.1-sol"
     SOURCE_ANSWER_REASONING_EFFORT: ClassVar[Literal["low"]] = "low"
+    ANALYSIS_REVIEW_MODEL: ClassVar[str] = "gpt-6.1-sol"
+    ANALYSIS_REVIEW_REASONING_EFFORT: ClassVar[Literal["low"]] = "low"
     CHAT_CONTEXT_TOKENS: ClassVar[int] = 400_000
     CHAT_MODEL_MAX_INPUT_TOKENS: ClassVar[int] = 272_000
     CHAT_MODEL_MAX_OUTPUT_TOKENS: ClassVar[int] = 128_000
@@ -57,6 +59,7 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr = Field(repr=False)
     openai_chat_model: str = CHAT_MODEL
     openai_source_answer_model: str = SOURCE_ANSWER_MODEL
+    openai_analysis_review_model: str = ANALYSIS_REVIEW_MODEL
     openai_embedding_model: str = EMBEDDING_MODEL
     openai_embedding_dimensions: PositiveInt = SCHEMA_VECTOR_DIMENSIONS
 
@@ -187,6 +190,10 @@ class Settings(BaseSettings):
         if self.openai_source_answer_model != self.SOURCE_ANSWER_MODEL:
             raise ValueError(
                 "Unsupported source-answer model metadata; add a reviewed model profile"
+            )
+        if self.openai_analysis_review_model != self.ANALYSIS_REVIEW_MODEL:
+            raise ValueError(
+                "Unsupported analysis-review model metadata; add a reviewed model profile"
             )
         if self.openai_embedding_model != self.EMBEDDING_MODEL:
             raise ValueError("Unsupported embedding model metadata; add a reviewed index profile")

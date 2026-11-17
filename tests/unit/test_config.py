@@ -80,6 +80,8 @@ def test_provider_key_is_required_and_nonblank(key: str | None) -> None:
         ({"openai_chat_model": "unknown-model"}, "chat model metadata"),
         ({"openai_source_answer_model": "unknown-model"}, "source-answer model metadata"),
         ({"openai_source_answer_model": Settings.CHAT_MODEL}, "source-answer model metadata"),
+        ({"openai_analysis_review_model": "unknown-model"}, "analysis-review model metadata"),
+        ({"openai_analysis_review_model": Settings.CHAT_MODEL}, "analysis-review model metadata"),
         ({"openai_embedding_model": "text-embedding-3-large"}, "embedding model metadata"),
         ({"openai_embedding_dimensions": 512}, "vector\\(1536\\)"),
         ({"max_upload_bytes": 0}, "max_upload_bytes"),
@@ -187,6 +189,29 @@ def test_source_answer_model_recipe_is_isolated_and_fixed_low(
     assert configured.chat_prompt_max_tokens == 12000
 
 
+def test_analysis_review_model_is_isolated_from_mini_roles_and_chat_recipe(
+    settings: Callable[..., Settings], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    baseline = settings(
+        openai_answer_reasoning_effort="none", openai_review_reasoning_effort="none"
+    )
+    monkeypatch.setenv("OPENAI_ANALYSIS_REVIEW_MODEL", "gpt-6.1-sol")
+    configured = settings(
+        openai_answer_reasoning_effort="none", openai_review_reasoning_effort="none"
+    )
+    assert (
+        configured.openai_analysis_review_model == Settings.ANALYSIS_REVIEW_MODEL == "gpt-6.1-sol"
+    )
+    assert configured.ANALYSIS_REVIEW_REASONING_EFFORT == "low"
+    assert configured.openai_chat_model == Settings.CHAT_MODEL
+    assert configured.openai_source_answer_model == Settings.SOURCE_ANSWER_MODEL
+    assert configured.openai_answer_reasoning_effort == "none"
+    assert configured.openai_review_reasoning_effort == "none"
+    assert configured.chat_configuration == baseline.chat_configuration
+    assert "openai_analysis_review_model" not in configured.chat_configuration
+    assert "openai_analysis_review_reasoning_effort" not in configured.chat_configuration
+
+
 def test_exact_model_input_and_combined_context_bounds(
     settings: Callable[..., Settings],
 ) -> None:
@@ -242,6 +267,7 @@ def test_credentials_do_not_leak_from_settings_or_invalid_input_diagnostics(
         {"redis_url": f"http://:{sentinel}@redis/0"},
         {"storage_backend": sentinel},
         {"openai_chat_model": sentinel},
+        {"openai_analysis_review_model": sentinel},
     ):
         with pytest.raises(ConfigurationError) as captured:
             settings(**overrides)
