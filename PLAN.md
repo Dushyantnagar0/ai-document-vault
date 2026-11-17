@@ -1,6 +1,6 @@
 # Delivery Plan
 
-**2026-11-17: factual source-selection/composition is integrated and deployed locally after the targeted verification gates.** [HANDOFF](docs/HANDOFF.md) records deployment and validation status; [current evaluation](docs/evaluation_current.md) separates provider-free checks, live source review and remaining qualifications. Earlier committed-source/CI results are historical baselines, not certification of later changes.
+**2026-11-18: factual chatv17 and analysis reviewv11 are integrated and deployed locally after targeted verification.** [HANDOFF](docs/HANDOFF.md) records deployment and validation status; [current evaluation](docs/evaluation_current.md) separates provider-free checks, live source review and remaining qualifications. Earlier committed-source/CI results are historical baselines, not certification of later changes.
 
 [CASE_STUDY.md](CASE_STUDY.md) governs requirements. [PRODUCT.md](PRODUCT.md) maps scope and evidence. [System design](docs/system_design.md) is the sole detailed HLD/LLD/contracts record; [testing strategy](docs/testing_strategy.md) owns verification commands and thresholds. This roadmap replaces the earlier duplicated design proposal.
 
@@ -20,14 +20,14 @@ M1 precedes M2, M2 precedes M3, M3 precedes M5; M4 instrumentation starts in M2/
 
 ## Current evidence and remaining exits
 
-Factual source selection/composition is delivered. A subsequent independent review passed eight new chat cases but reopened ingestion acceptance when an ordinary PDF failed two insight-review contracts; the held-out DOCX completed. Current work constrains analysis-review requests to actual candidates and gives the existing single repair allowlisted rejection guidance. The correction passed1,425 provider-free tests and fresh PDF/DOCX completion with9/10 authorized calls; source review retains wording/novelty defects. Track those remaining semantic gates and deployment status in the current evaluation and handoff; successful ingestion is not a general quality pass.
+Factual chatv17 and the reviewv9 ingestion-availability correction are delivered. Reviewv11 closes the targeted summary-condition/deadline findings with a dedicated analysis reviewer and unchanged validation/call ceilings. Parent and independent assistant source review passed frozen positive/negative controls and two fresh PDF/DOCX uploads. Normal deployment and coherent code packaging are verified; current evidence does not certify every future model output.
 
 | Area | Recorded checkpoint | Remaining qualification |
 |---|---|---|
-| Backend/static | Reviewv9 working tree:1,425 tests/static/startup/schema checks; historical `3cf1bb6` export:1,406 tests | Correction packaged as `1d51569` and deployed; hosted CI remains scoped to its commit |
-| Live AI | Delivered v17 controls/four API cases, independent eight-chat review, and fresh reviewv9 PDF/DOCX ingestion | Analysis wording/novelty and per-component citation qualifications remain; no overall semantic pass |
-| Persistence/recovery | Integrated suite plus current isolated API/worker restart and exact zero-call replay | Ordinary restart evidence is not a new hard-kill drill |
-| UI/demo | Existing UI is unchanged; AppTest is part of the provider-free suite | Human walkthrough/recording delivery remains distinct from tests |
+| Backend/static | Reviewv11:1,449 tests, static/startup/schema checks; matching final test image | Cached local evidence; hosted CI is tied to its exact commit |
+| Live AI | Reviewv11 targeted frozen controls and fresh PDF/DOCX,17/20 calls; earlier unchanged-v17 chat evidence | Minor presentation/conservative partial warning; no new broad live-chat or statistical quality claim |
+| Persistence/recovery | Integrated suite, scoped retrieval, exact replay and isolated restart with unchanged nine business tables/originals | Ordinary restart is not a new hard-kill drill |
+| UI/demo | Existing UI unchanged; AppTest included | Human recording delivery remains distinct from tests |
 | Setup/performance | Isolated local builds/startup and earlier clean-export evidence | No uncached-download, broad-platform or thousand-document benchmark claim |
 
 [HANDOFF](docs/HANDOFF.md) owns the current integrated checkpoint and remaining review steps. Reuse completed paid requests; new revisions must be intentional and retain prior failures.
