@@ -1,0 +1,23 @@
+# Local secrets; retain committed example templates.
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Local runtime files and Python tooling.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+data/
+uploads/
+*.log
+.DS_Store
+
+# Local notes, recordings and review artifacts.
+.private/
