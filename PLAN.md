@@ -1,6 +1,6 @@
 # Delivery Plan
 
-**2026-11-17: core implementation includes a bounded claim/source review pipeline and targeted reliability corrections.** Current validation separates deterministic orchestration, frozen-evidence generation, saved-chunk analysis and actual service conversations. [HANDOFF](docs/HANDOFF.md) owns exact deployment/checkpoints; [evaluation report](docs/evaluation_current.md) retains failed attempts and semantic limitations. Clean committed-source validation passed at `f252961`; manual semantic review and delivery of the document-chat demonstration remain open.
+**2026-11-17: factual source-selection/composition is integrated and deployed locally after the targeted verification gates.** [HANDOFF](docs/HANDOFF.md) records deployment and validation status; [current evaluation](docs/evaluation_current.md) separates provider-free checks, live source review and remaining qualifications. Earlier committed-source/CI results are historical baselines, not certification of later changes.
 
 [CASE_STUDY.md](CASE_STUDY.md) governs requirements. [PRODUCT.md](PRODUCT.md) maps scope and evidence. [System design](docs/system_design.md) is the sole detailed HLD/LLD/contracts record; [testing strategy](docs/testing_strategy.md) owns verification commands and thresholds. This roadmap replaces the earlier duplicated design proposal.
 
@@ -20,15 +20,15 @@ M1 precedes M2, M2 precedes M3, M3 precedes M5; M4 instrumentation starts in M2/
 
 ## Current evidence and remaining exits
 
-The current quality phase adds summary-first focused insights, sentence-aware literal sources, claim-level source review, separately bounded persisted audit data, and a migration allowing one repaired draft alongside the review. The earlier twenty-case core checkpoint, including its owner-follow-up mismatch, is historical evidence for its recorded recipe. Historical ten-case mixed regression and two RAG service checks precede the latest two-document live run, five selected final-recipe HTTP checks and exact saved-analysis projection replay. [Current evaluation](docs/evaluation_current.md) records their separate recipes and remaining semantic failures; none is a blanket quality pass. Preserve earlier failures separately from corrected results.
+Current work replaces factual drafting/review with source selection followed by composition, preserving the normal four-request flow, shared fifth repair and unchanged legacy/analysis routes. The original comparison and additional controls have source-reviewed supplied-evidence results; strict contextual checklist omissions remain recorded. Four current actual API cases and restart/replay checks satisfy the targeted integrated gate; documented strict-checklist and semantic limits remain.
 
 | Area | Recorded checkpoint | Remaining qualification |
 |---|---|---|
-| Backend/static | Clean committed code export `8ba7705`: 1,305 tests, Ruff/format/mypy and startup/schema checks passed with fresh isolated volumes | Remote CI, remote clone and uncached-download setup remain separate |
-| Live AI | Targeted insight controls pass; latest five-call current-contract HTTP comparison completed but failed completeness/causal-support review | Chat quality remains open; user-authorized deployment for manual testing completed;90/90 authorized calls used |
-| Persistence/operations | Historical restart/recovery checks plus current isolated restart: all nine durable table hashes, original PDF and exact replay/history preserved with zero extra AI calls | Normal deployment also preserves all durable table/original-file hashes; backups and every crash scenario remain unverified |
-| UI/demo/diagrams | Historical live browser/history/source/reload checks and rendered diagrams; current source changes have separate checks | Record actual prompt versions and distinguish live/substitute/read-only evidence |
-| Setup/performance | Fresh-volume normal Compose source snapshot and local timing samples recorded | No uncached downloads, other-platform or thousand-document benchmark claim |
+| Backend/static | Clean code export `3cf1bb6`: 1,406 provider-free tests, static/startup/schema checks passed | Current hosted status belongs to PR2; historical CI remains scoped to its commit |
+| Live AI | Frozen controls and four actual API/source checks completed | Strict contextual omissions and internal per-component citation qualifications remain explicit |
+| Persistence/recovery | Integrated suite plus current isolated API/worker restart and exact zero-call replay | Ordinary restart evidence is not a new hard-kill drill |
+| UI/demo | Existing UI is unchanged; AppTest is part of the provider-free suite | Human walkthrough/recording delivery remains distinct from tests |
+| Setup/performance | Isolated local builds/startup and earlier clean-export evidence | No uncached-download, broad-platform or thousand-document benchmark claim |
 
 [HANDOFF](docs/HANDOFF.md) owns the current integrated checkpoint and remaining review steps. Reuse completed paid requests; new revisions must be intentional and retain prior failures.
 
@@ -71,4 +71,4 @@ Keep CASE_STUDY unchanged. Keep detailed contracts in one place. Update design a
 
 ## Current prerequisites and pending evidence
 
-Docker Desktop and the operator-supplied ignored key are configured locally. Host Python was left unchanged; application checks use container Python 3.12. Routine tests and crash/upload-browser checks use a provider substitute. Historical live API evaluation met its recorded automatic gate. Current frozen-evidence, saved-chunk analysis and real-service checks retain their own failures, partial outcomes and assistant reviews. Consult HANDOFF for the latest integrated tests and deployed recipe; earlier regression/deployment/browser checks do not certify later source changes. Human semantic approval remains open. A clean export of committed code checkpoint `8ba7705` passed the isolated build/startup/regression/schema checks using cached Docker layers. Other platforms, large-collection capacity, GitHub CI, remote cloning and uncached-download checks remain unverified; see [current evaluation](docs/evaluation_current.md).
+Docker Desktop and the operator-supplied ignored key are configured locally. Host Python was left unchanged; application checks use container Python 3.12. Routine tests and crash/upload-browser checks use a provider substitute. Historical live API evaluation met its recorded automatic gate. Current frozen-evidence, saved-chunk analysis and real-service checks retain their own failures, partial outcomes and assistant reviews. Consult HANDOFF for the latest integrated tests and deployed recipe; earlier regression/deployment/browser checks do not certify later source changes. Human semantic approval remains open. A clean export of committed code checkpoint `8ba7705` passed the isolated build/startup/regression/schema checks using cached Docker layers. GitHub provider-free checks passed for `bb5001a`; other platforms, large-collection capacity, a manual remote-clone setup and uncached-download checks remain unverified; see [current evaluation](docs/evaluation_current.md).

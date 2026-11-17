@@ -4,32 +4,86 @@
 
 ## Current recipe
 
-- Analysis: `analysis-v14`, `focused-insights-v2`, `evidence-review-v8`; insight/review wire format `source-aliases-v1`.
-- Chat: `planner-v3`, `answer-v13`, `grounded-chat-v16`, `chat-evidence-review-v7`.
-- Projection: `evidence-projection-v14`; source passages: `literal-sentences-v2`.
-- Generation: `gpt-5.4-mini-2026-03-17`; embeddings: `text-embedding-3-small`, 1536 dimensions. Answer and review effort default to `low`; planning and analysis drafting retain `none`. Both effort settings accept `none|low`. Medium-review, larger-model and additional planning-protocol experiments were not adopted.
+This is the **current source recipe**, verified in isolated infrastructure and subsequently deployed locally with user authorization. Normal services run pipeline v17; deployment verification is recorded below.
 
-Analysis reserves downstream prompt space before final synthesis. Compact aliases preserve original provenance. Generation still permits eight summary blocks; final analysis allows sixteen to accommodate citation corrections and literal qualifications without discarding later supported sections. Per-block support, visible-text budgets and chat limits remain unchanged. History trimming preserves complete exchanges both in storage retrieval and complete-prompt assembly.
+- Analysis: `analysis-v14`, `focused-insights-v2`, `evidence-review-v8`; `source-aliases-v1` wire format, unchanged.
+- Chat: `planner-v3`, `grounded-chat-v17`; factual `source-selection-v1` then `source-composition-v1`, using `gpt-6.1-sol` at fixed low effort.
+- Planning and legacy overview/exhaustive/analysis generation remain on `gpt-5.4-mini-2026-03-17`; legacy `answer-v13`/`chat-evidence-review-v7`/`evidence-projection-v14` remain available. Answer/review effort settings apply to those paths. Sol is a reviewed alias, not a dated snapshot.
+- Embeddings: `text-embedding-3-small`,1536dimensions. Literal source passages remain `literal-sentences-v2`.
 
-Prompts distinguish modal strength and conditional triggers, ask comparisons to preserve linked consequences, and require every premise of an insight to be supported. These instructions remain fallible. Normal factual chat uses four provider requests; one draft or review repair shares the fifth-call ceiling.
+Factual source selection receives the original question/resolved query and original passages before any answer exists. Composition receives frozen selected passages/components, with original citations restored server-side. Four normal requests and one shared fifth structural/source repair retain the existing ceiling; insufficient selection skips composition. There is no extra post-composition reviewer. Source membership, component accounting and copied-identifier checks do not prove entailment or completeness. Analysis, extraction, retrieval, history pairing and persistent replay are unchanged.
 
-## Structured-contract verification
+The integrated provider-free gate passed **1,406 tests in 22.19s**, Ruff/format on 137 files, mypy on 74 source files, Docker build/startup and Alembic no-drift. Real-service/provider-substitute checks include both source repair stages, exhausted repair, failure persistence, actual model/effort/version routing, partial/refusal, exact replay, existing recovery and UI AppTest. This is cached local working-tree verification, not remote CI, a fresh committed export or semantic certification.
 
-Analysis now records explicit whole-candidate usefulness assessments; chat records requested source-based aspects. The final working-tree provider-free checkpoint passed **1,305 tests in 19.80s**, Ruff lint/format, mypy (73 source files), Docker startup and Alembic schema checks. Container application/script sources match the working tree. HTTP tests verify actual planner=`none`, answer=`low`, review=`low` routing, a persisted explicit `none` override and free replay. A later Compose pass-through correction was separately checked with default and explicit effort overrides. The final live comparison failed semantic review. The user subsequently requested this candidate be deployed for manual testing; the normal application now runs the current source. Deployment does not close the quality finding.
+## Source-selection validation
+
+The candidate selects requested source evidence before composing from the frozen selection. It replaces the responsibilities of two post-retrieval requests without adding a routine request. These stages are now integrated for factual chat only; earlier experiments below preceded integration. Source membership, component accounting and copied-identifier safeguards still do not prove entailment or completeness.
+
+The helper/safeguard checkpoint passed **1,367 provider-free tests in 20.24s**, Ruff lint/format and mypy on 74 files. Separate Compose startup and Alembic checks passed. Later prompt-only revisions passed 62 focused tests. Parent review corrected an unnecessary input-reservation rejection and preserved the existing copied-name/numbered-reference check against the immutable full original catalog. A deliberate incomplete-prose test preserves the boundary between structural validation and meaning.
+
+The separately authorized 25-request experiment retained every failure:
+
+| Configuration | Observed result |
+|---|---|
+| Mini model, low effort | Source selection omitted the deadline/grace relationship; composition strengthened advice. Splitting comparison instructions did not resolve those failures. |
+| Mini model, medium effort | Original comparison improved, but independent controls omitted defining approval conditions. A later revision also merged separate conditional rules incorrectly. |
+| GPT-5.4, medium effort | Source-first writing still merged conditions. Existing-review diagnostics timed out; a later raw response exhausted all 4,096 output tokens on reasoning and returned no review text. |
+| GPT-6.1 Sol, low effort, existing review flow | Identified the original omission and unsupported causal claim, but literal projection repeated content, left awkward fragments and reached the block limit. Not accepted for release. |
+| GPT-6.1 Sol, low effort, source-selection/composition candidate-v3 | Original comparison and independent comparison preserve the requested relationships and conditions; the unknown-duration case is correctly partial. Further qualifications below remain. |
+
+Independent assistant review of the final four frozen-source results found:
+
+- **Original comparison:** required material content and displayed citations pass. Two internal blocks do not independently select every supporting premise; those premises are selected elsewhere and present in their matching displayed citations. This is not complete per-block provenance certification.
+- **Independent comparison:** unchanged expected facts, conditions and displayed-source support pass.
+- **Recommendation/requirement question:** the focused answer is accurate and includes timely written approval, but omits the scheduling-permission clause in the stricter frozen checklist. That criterion remains failed; it was not rewritten to fit the output.
+- **Partial question:** gives the supported fee cap and separately identifies unknown decision duration without inventing it.
+
+These are supplied-evidence generation checks, not retrieval, fresh ingestion, actual API publication or human sign-off. The final configuration used two requests per case and 8.36–20.44 seconds summed across provider stages; these small observations are not full-API latency targets or percentiles. The subsequently authorized seven controls completed. Why, fee-cap, shifted-window, false-premise and injection cases passed source review; the unrelated question was refused. The genuine planner follow-up is accurate but omits an additional consequence in its unchanged strict checklist. That failure and the modal-checklist omission remain explicit. The frozen unrelated case did not exercise a history-driven planner switch; actual API testing covers that separately. Those frozen experiments left the normal application/data unchanged; the subsequent authorized deployment is recorded separately.
+
+**The initial round used 25/25 authorized requests**, including failed/uncertain attempts; an earlier 90-request allowance is separate and exhausted. A further 35-call allowance was explicitly approved: fourteen requests completed the remaining frozen controls. Actual API verification follows under the same new ledger; its final usage and source review are recorded separately. No full-checklist or general reliability pass is claimed.
+
+## Current isolated API and restart verification
+
+Four ordered questions used one new conversation on the existing narrative PDF and stored vectors. Requests crossed the actual FastAPI route, mini planner, query-embedding endpoint, pgvector retrieval and Sol source stages. No new upload or re-embedding occurred in this isolated API run. Normal deployment was verified afterward, separately. Independent assistant review compared actual supplied passages, selected bindings, final prose and displayed citations against expectations frozen before these outputs.
+
+| Case | Observed result | HTTP elapsed / provider requests |
+|---|---|---|
+| Original comparison | Answered; includes effective approval, revised-deadline grace, $4 rate/$24 cap, and inspection/preparation scheduling cause without the earlier unrelated causal join | 27.312s /4 |
+| Genuine follow-up | Answered; actual preceding exchange resolves staff/extension, preserves approval before the original deadline and the consequences without timely approval | 22.173s /4 |
+| Fee plus unknown decision duration | Partial; supported cap/charge boundaries and explicit missing decision time. US currency is present in selected and displayed source text | 14.803s /4 |
+| Unrelated subject after three exchanges | Insufficient/no citations; planner receives the actual history, preserves the new subject, and composition is skipped | 7.735s /3 |
+
+All four pass their frozen API criteria and displayed-source review. This resolves the reproduced comparison failure **for this integrated check**, not every possible answer. Fine-grained internal support remains qualified: one comparison block and one follow-up block use a premise selected in another component but present in the same displayed citation. The older strict modal/follow-up fixture omissions remain recorded, unchanged. Assistant review is not human approval or a measured general accuracy rate.
+
+Every exact HTTP replay returned the saved response/history with zero additional requests. After an isolated API/worker restart, all nine durable business-table hashes and both stored-original hashes matched; real HTTP replay of all four answers, history and the original PDF remained exact, again at zero provider cost. API/worker application hashes matched all 52 current Python files. These are ordinary restart/replay checks, not a fresh hard-kill drill or a new live question after restart.
+
+**New allowance usage: 29/35 requests** — fourteen frozen-control requests and fifteen actual API requests; six remain unused. Earlier25/90-call rounds are separate historical allowances. No additional generation is scheduled. The four latency samples do not establish a percentile; two exceed the proposed 20-second target, so that performance target is not demonstrated. The final local provider-free suite passed1,406 tests in 22.19s; hosted CI status and broad live/platform/load evaluation remain separate.
+
+## Source delivery and normal deployment
+
+The code is packaged in three dependency-ordered commits: provider/configuration `59e3fa1`, source helpers `2bf8734`, and factual integration/evaluation routing `3cf1bb6`. Exact staged slices passed 100 provider/config tests and62source-helper tests. The integration commit’s exact 170-file clean export passed Docker build/startup, **1,406 tests in 21.71s**, Ruff/format on 142 files, mypy on 74 source files and Alembic no-drift against fresh isolated volumes and a provider substitute. Exports excluded real environment files/private artifacts/data; Docker layers were cached. This is source-delivery evidence, not another live-AI run. The subsequent documentation commit does not alter application source.
+
+User-authorized deployment rebuilt the normal application without resetting volumes. API/UI/worker health passed; API/worker hashes match all 52 application Python files. All nine durable business-table hashes, stored-original hashes and `.env` matched before/after. No AI calls ran during deployment/packaging; saved analyses/history were not regenerated. See [PR2](https://github.com/Dushyantnagar0/ai-document-vault/pull/2) for current hosted CI status; the dated baseline CI results below retain their original scope.
+
+## Historical structured-contract verification — pipeline v16
+
+Analysis now records explicit whole-candidate usefulness assessments; chat records requested source-based aspects. The final working-tree provider-free checkpoint passed **1,305 tests in 19.80s**, Ruff lint/format, mypy (73 source files), Docker startup and Alembic schema checks. Container application/script sources match the working tree. HTTP tests verify actual planner=`none`, answer=`low`, review=`low` routing, a persisted explicit `none` override and free replay. A later Compose pass-through correction was separately checked with default and explicit effort overrides. The final live comparison failed semantic review. The user subsequently requested this candidate be deployed for manual testing; the normal application ran that pipeline v16 baseline at that checkpoint. That deployment alone did not close the quality finding.
 
 A live review correctly rejected two trivial inventory candidates. It initially failed an overly strict empty-reference requirement; exact offline replay after validation correction preserves six summary blocks and discards both candidates. A positive conditional calculation first failed missing-claim validation, then retained an uncited trailing caveat. The clause-audit revision retained it with all four required sources and unchanged summary claims, confirmed by independent assistant source review. These are frozen-review and offline-projection results, not new ingestion or browser runs.
 
-The comparison omission is **not closed**: required aspects alone and a stronger-model diagnostic still missed it. Private source-first planning identified the relationship, but the provisional span-based coverage protocol produced invalid metadata and repetition. Those architecture/model changes were not adopted. Low answer reasoning on the existing mini model produced one better frozen draft; the actual HTTP check did not reproduce a complete supported answer. Its first draft contained the grace-period link but combined two quote IDs into one invalid string and strengthened a recommendation into a requirement. The permitted draft retry restored valid references but omitted that link. The reviewer then omitted the same aspect and incorrectly accepted full coverage. Source review also found a separate borrowing-eligibility rule presented as a cause of the reservation check without support for that causal relationship. Correct retrieval, valid references and HTTP 200 therefore did not satisfy the content-quality gate.
+At that historical checkpoint, the comparison omission was **not closed**: required aspects alone and a stronger-model diagnostic still missed it. Private source-first planning identified the relationship, but the provisional span-based coverage protocol produced invalid metadata and repetition. Those architecture/model changes were not adopted. Low answer reasoning on the existing mini model produced one better frozen draft; the actual HTTP check did not reproduce a complete supported answer. Its first draft contained the grace-period link but combined two quote IDs into one invalid string and strengthened a recommendation into a requirement. The permitted draft retry restored valid references but omitted that link. The reviewer then omitted the same aspect and incorrectly accepted full coverage. Source review also found a separate borrowing-eligibility rule presented as a cause of the reservation check without support for that causal relationship. Correct retrieval, valid references and HTTP 200 therefore did not satisfy the content-quality gate.
 
 The final HTTP request returned in **14.02 seconds**, using all five allowed requests: planning, query embedding, draft, one draft repair and review. Persisted versions/settings matched the current recipe, including low answer/review effort. Replay returned the identical answer/history without further calls. An ordinary restart of the isolated API/worker preserved counts and hashes of all nine durable business tables and the original PDF checksum. This is operational evidence for the candidate, not a semantic pass or a normal-installation deployment.
 
 The subsequent user-authorized normal deployment passed API/UI/worker health checks and API/worker source-hash comparison. Before/after counts and hashes of all nine durable business tables and all stored originals matched. No provider calls, data reset or regeneration were performed during deployment; new manual questions remain separate from preserved historical responses.
 
-**Paid usage: 90/90 authorized outbound requests used**, all durably recorded, including unsuccessful experiments. The last five used 14,526 input tokens (including the query embedding) and 1,330 generation output tokens. No requests remain authorized; no additional paid rerun is scheduled. Earlier failures below remain historical evidence.
+**Paid usage: 90/90 authorized outbound requests used**, all durably recorded, including unsuccessful experiments. The last five used 14,526 input tokens (including the query embedding) and 1,330 generation output tokens. That historical allowance has no requests remaining; later authorized work is recorded above. Earlier failures below remain historical evidence.
 
 ## Committed-source check
 
 A clean export of `8ba7705` contains all 167 tracked files needed for the code/test checkpoint and excludes real environment files, private artifacts and local data. With fresh isolated volumes and the provider substitute, Docker build/startup, **1,305 tests in 21.32 seconds**, Ruff lint/format, mypy on 73 source files and Alembic no-drift passed. Checks of the exact staged slices also passed before their separate commits. The first slice-level database run lacked foundation migrations and stopped at fixture setup; after applying the migrations, all 65 history checks passed. These are provider-free checks with cached Docker layers on the existing local platform. No semantic failure was relabelled and no paid call was added during packaging.
+
+The provider-free GitHub [push run](https://github.com/Dushyantnagar0/ai-document-vault/actions/runs/44110707928) and [pull-request run](https://github.com/Dushyantnagar0/ai-document-vault/actions/runs/44110782213) both passed for `bb5001a` on the Ubuntu 24.04 runner. They cover the committed baseline, not the subsequent source-stage integration or live-provider semantics.
 
 ## Earlier evidence for this work
 
@@ -52,7 +106,7 @@ Expected source facts and initial question order were frozen before execution. S
 - The refined narrative overview preserves major later themes after projection, but still omits some details, including bank-posting delay and aspects of disputed-balance refunds. A bounded overview is not exhaustive. Chunk participation, extraction coverage and semantic completeness are distinct.
 - Model review can approve a strengthened obligation, omit a condition or accept weak novelty. Exact source membership and copied-identifier guards do not prove entailment. Independent source review remains necessary; no universal hallucination or grading guarantee is made.
 - This is not a fresh complete eight-question run after every change. Final analysis was checked by saved-chunk generation plus exact offline projection; final chat used a selected five-question HTTP run. No new browser interaction is claimed because the UI was unchanged.
-- English and native PDF/DOCX are the evaluated scope. OCR/visual interpretation, other languages, thousand-document load, remote CI, uncached setup and other platforms remain unverified or deferred as documented.
+- English and native PDF/DOCX are the evaluated scope. OCR/visual interpretation, other languages, thousand-document load, uncached setup and other platforms remain unverified or deferred as documented.
 
 ## Historical evidence
 

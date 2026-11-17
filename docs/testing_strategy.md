@@ -2,7 +2,7 @@
 
 ## Status and authority
 
-**2026-11-16:** verify content quality separately from transport/schema correctness. [HANDOFF](HANDOFF.md) records the current integrated checkpoint; [evaluation report](evaluation_current.md) records exact live recipes, paid usage, failed attempts and assistant source review. Valid citation IDs and test counts do not establish entailment or human approval. Historical restart, crash and upload evidence remains qualified there and in the journal.
+**2026-11-17:** verify content quality separately from transport/schema correctness. [HANDOFF](HANDOFF.md) records the current integrated checkpoint; [evaluation report](evaluation_current.md) records exact live recipes, paid usage, failed attempts and assistant source review. Valid citation IDs and test counts do not establish entailment or human approval. Historical restart, crash and upload evidence remains qualified there and in the journal.
 
 [CASE_STUDY.md](../CASE_STUDY.md) governs requirements. This strategy verifies the selected design in [system_design.md](./system_design.md), which owns limits, defaults, states and recovery contracts. Checks support all three 33% evaluation categories; comprehensive coverage is a bonus. Record actual commands, revision, environment, outcomes and unavailable checks in [AI_DEV_JOURNAL.md](../AI_DEV_JOURNAL.md). Code completion or a subagent report alone does not verify a phase.
 
@@ -36,7 +36,7 @@ docker compose -p vault-test -f compose.yaml -f compose.test.yaml --profile test
 docker compose -p vault-test -f compose.yaml -f compose.test.yaml --profile test run --rm test pytest
 ```
 
-The override declares required services and waits for readiness for the full pytest run; static/unit/API checks use `--no-deps`. Keep both Compose files and `-p vault-test` together to isolate settings, credentials and data from the normal installation. Pytest disables sockets by default; real-service tests opt in only at controlled boundaries. The [provider-free GitHub Actions workflow](../.github/workflows/tests.yaml) now builds, checks types/style, starts isolated services, runs pytest and checks migration drift; execution on GitHub is unverified. The observed platform is macOS Apple Silicon with Linux arm64 containers; other platforms remain unverified. Live AI is opt-in and is not part of the routine test command.
+The override declares required services and waits for readiness for the full pytest run; static/unit/API checks use `--no-deps`. Keep both Compose files and `-p vault-test` together to isolate settings, credentials and data from the normal installation. Pytest disables sockets by default; real-service tests opt in only at controlled boundaries. The [provider-free GitHub Actions workflow](../.github/workflows/tests.yaml) now builds, checks types/style, starts isolated services, runs pytest and checks migration drift; the push and pull-request runs for `bb5001a` passed on GitHub (Ubuntu 24.04 runner). This is provider-free CI evidence, not a desktop/browser or live-AI platform certification. The observed platform is macOS Apple Silicon with Linux arm64 containers; other platforms remain unverified. Live AI is opt-in and is not part of the routine test command.
 
 For the bounded quality tools, `--check-only` is provider-free:
 
@@ -218,7 +218,7 @@ broker_check up --build -d --wait api worker ui
 
 The verified consumer policy retries transport indefinitely; document attempt/call/deadline limits and producer publication timeouts remain bounded. See [Celery connection retry settings](https://docs.celeryq.dev/en/stable/userguide/configuration.html#broker-connection-max-retries).
 
-## Qualification-review regression checkpoint
+## Historical qualification-review checkpoint and retained legacy checks
 
 Projectionv10 tests cover repeated selection members/groups, differing/reversed group coverage without unsafe union, and unknown coverage forcing original-text supplementation. Unknown qualification sources still fail closed. A real isolated PostgreSQL/pgvector service regression verifies failed review context persistence, public-error redaction, history and zero-call replay. The 2026-11-16 full provider-free gate passed1091tests in19.04s. Separately, one exact reported PDF question completed through real metered planner/embedding/retrieval/draft/review in16.3s with two citations and HTTP-readable persisted history; this is one service-level live observation, not a browser submission or broad semantic pass. HANDOFF records the exhausted controlled request allowance.
 
@@ -226,10 +226,16 @@ The subsequent bounded-review-repair regressions cover first-invalid/then-valid 
 
 Chat relevance regressions cover fully supported but off-topic drafts, empty/insufficient relevance without reattached qualifications, genuine partial subsets, paraphrase/follow-up decisions and strict claim/source identities. A real isolated PostgreSQL service check verifies200insufficient/no citations, saved history and zero-call replay. Deterministic decisions verify enforcement rather than semantic model accuracy. The targeted live Kafka check separately tests planning with saved history and reviews the original bad draft/evidence; two component requests are not a fresh full HTTP/embedding/drafting run.
 
-Review regressions cover lossless compact indexing with more than200passages, actual input guards, upstream review-capacity fitting, saved input-rejection diagnostics, provisional-versus-reviewed status and missing-request rendering. Source review must check causal actor/object preservation and every qualification's relevance. Frozen-context live tests exercise drafting/review; fresh service tests add planning, embeddings, pgvector and durable history. Neither should be labeled a new HTTP/browser ingestion run.
+Review regressions cover lossless compact indexing with more than200passages, actual input guards, upstream review-capacity fitting, saved input-rejection diagnostics, provisional-versus-reviewed status and missing-request rendering. Source review must check causal actor/object preservation and every qualification's relevance. Legacy frozen-context live tests exercise drafting/review; fresh service tests add planning, embeddings, pgvector and durable history. Neither should be labeled a new HTTP/browser ingestion run.
 
 ### Structured coverage and usefulness regressions
 
 Require separate controls for supported-but-trivial insights, useful calculations with every trailing qualification sourced, and comparisons whose cited passage contains an outcome absent from the answer text. Validate raw identities even for discarded content. Missing/duplicate per-candidate assessments must not silently fall back to historical schemas. Coverage tests enforce the declared inventory; independent source review must still detect aspects the model never selected.
 
-Record planner, answer and review reasoning settings separately. Use the provider substitute to verify actual stage routing and unchanged call ceilings; this does not establish semantic quality. A frozen writer success needs subsequent review/rendering and actual-service verification before being described as an integrated correction. Retain older failed requests and record omissions in the final answer even when HTTP status and source IDs validate.
+Record planner, answer and review reasoning settings separately. Use the provider substitute to verify actual stage routing and unchanged call ceilings; this does not establish semantic quality. A legacy frozen writer success needs its subsequent review/rendering and actual-service verification before being described as an integrated correction. Factual source-stage results need their own composition/rendering and actual API gate; they do not add a post-composition reviewer. Retain older failed requests and record omissions in the final answer even when HTTP status and source IDs validate.
+
+## Factual source-stage regression gate
+
+Test selection/composition independently and through real HTTP/database boundaries: actual model/effort and route versions; original question plus resolved follow-up; no assistant-history facts; partial/refusal outcomes; unknown/cross-document references; copied-name validation; preflight and actual prompt budgets; exactly one shared repair; timeout/failure metadata; restart persistence and free request replay. Keep overview, exhaustive, ingestion and recovery regressions in the same provider-free suite. Fixtures test contracts, not model quality.
+
+Live acceptance additionally inspects source relationships, modal strength, conditional direction, numerical limits, false premises, unrelated subjects and injected instructions. Freeze expectations before calls, retain failed checklist clauses, and distinguish focused-question accuracy from extra contextual coverage. Compare the original failing question through the actual API after integration; supplied-evidence success alone does not close that gate. Record model roles and actual stage versions so old mini draft/review results cannot count as current factual evidence.

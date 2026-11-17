@@ -2,7 +2,7 @@
 
 A self-hosted service for document summaries, insights, and natural-language conversations with source citations. Each installation keeps its own data and uses its owner's OpenAI API key.
 
-**Status: core backend and Streamlit client implemented.** Upload a document, inspect its summary/insights, and ask follow-up questions with source citations. Analysis and chat use evidence review; model judgments remain fallible. See [current evaluation](./docs/evaluation_current.md) for results and limitations.
+**Status: core backend and Streamlit client implemented.** Upload a document, inspect its summary/insights, and ask follow-up questions with source citations. Analysis uses evidence review; factual chat selects source evidence before composing an answer. Model judgments remain fallible. See [current evaluation](./docs/evaluation_current.md) for results and limitations.
 
 ## Review guide
 
@@ -24,13 +24,13 @@ curl http://localhost:4000/health/live
 curl http://localhost:4000/health/ready
 ```
 
-Copy the example only when creating a new configuration; preserve an existing `.env`. Keep your key in that ignored local file, never in committed examples or support output. Defaults supply local database credentials and model/budget settings. Health checks do not call OpenAI or verify account/model access. A placeholder key permits infrastructure inspection, but real document processing needs a working key and quota. After changing container configuration, run `docker compose up --build -d --wait` again.
+Copy the example only when creating a new configuration; preserve an existing `.env`. Keep your key in that ignored local file, never in committed examples or support output. Defaults supply local database credentials and model/budget settings. Health checks do not call OpenAI or verify account/model access. The key needs access to `gpt-5.4-mini-2026-03-17`, `gpt-6.1-sol` and `text-embedding-3-small`. Factual selection/composition uses Sol at low reasoning; other generation keeps the mini model. Sol is a reviewed model alias, so future provider changes still require quality checks. A placeholder key permits infrastructure inspection, but real document processing needs a working key and quota. After changing container configuration, run `docker compose up --build -d --wait` again.
 
 Startup builds the image, initializes shared-volume permissions, applies migrations and waits for healthy API/worker services. Open [Swagger](http://localhost:4000/docs) to inspect and exercise the current APIs. Readiness reports core database/schema/storage status and broker/worker degradation; saved reads remain available during broker outages when core dependencies are healthy. Startup waiting also checks the worker.
 
 The API and UI are published only on localhost ports 4000 and 4005; PostgreSQL and Redis stay internal. The UI calls the API over HTTP and receives no OpenAI key or database credentials. This is a trusted personal installation without authentication. Shared accounts and public hosting are outside scope. Optional settings and compatibility constraints are in [.env.example](./.env.example) and [system design](./docs/system_design.md); changing an embedding model/dimension is not a substitute for a compatible profile/migration.
 
-Chat answer drafting uses configurable `OPENAI_ANSWER_REASONING_EFFORT=low` (`none|low`). Planning stays `none`; review has its separate setting. Reasoning shares the existing completion cap and can affect tokens/latency without adding a provider request.
+Legacy overview/exhaustive drafting uses configurable `OPENAI_ANSWER_REASONING_EFFORT=low` (`none|low`). Factual selection/composition uses `OPENAI_SOURCE_ANSWER_MODEL=gpt-6.1-sol` with fixed low reasoning. Planning stays `none`; legacy/analysis review has its separate setting. Reasoning shares the existing completion cap and can affect tokens/latency without adding a provider request.
 
 ## Upload, inspect and retrieve a document
 
@@ -79,7 +79,7 @@ docker compose exec api python -m scripts.live_ingestion --live --format pdf
 docker compose exec api python -m scripts.live_ingestion --live --format docx --fixture-version 2
 ```
 
-The explicit DOCX version selects the corrected evaluation fixture. Script output contains status, summary/insights, coverage and available usage. It never needs the key pasted into a command argument. Saved documents are immutable; updating prompts does not automatically regenerate earlier analyses. New small uploads normally use one embedding request plus summary, insight and evidence-review requests; larger documents and a bounded repair can use more. Ordinary factual chat normally uses four requests (planner, query embedding, answer and review), with at most five sharing one draft repair or one review repair. Empty insufficient answers and literal partial inventories skip review. Configurable review completion limits include reasoning tokens; visible insight content has a separate limit.
+The explicit DOCX version selects the corrected evaluation fixture. Script output contains status, summary/insights, coverage and available usage. It never needs the key pasted into a command argument. Saved documents are immutable; updating prompts does not automatically regenerate earlier analyses. New small uploads normally use one embedding request plus summary, insight and evidence-review requests; larger documents and a bounded repair can use more. Ordinary factual chat normally uses four requests (planner, query embedding, source selection and composition), with a shared fifth request for one structural/source repair. An unsupported source selection skips composition. Overview and exhaustive routes retain their separate drafting/review behavior. Configurable review completion limits include reasoning tokens; visible insight content has a separate limit.
 
 ## Verification and limits
 
@@ -96,7 +96,7 @@ Inspect automatic checks and source-review results separately. The [testing stra
 
 Provider-free checks cover source/citation validation, budgets, replay, history and real PostgreSQL/pgvector/Redis/Celery/file boundaries. Ruff, formatting, mypy and schema-drift checks run through the isolated image. A provider substitute establishes orchestration, not live AI quality. [Current evaluation](./docs/evaluation_current.md) records versions, counts, source-review results and limitations; the [journal](./AI_DEV_JOURNAL.md) preserves historical AI-assisted iterations.
 
-A clean export of committed code checkpoint `8ba7705` passed Docker build/startup, all 1,305 tests, lint, formatting, typing and migration-drift checks with fresh isolated volumes and a local provider substitute. It contained no real environment file or local data and used the existing Docker cache. This verifies the exported committed source, not remote cloning, uncached downloads or live-provider quality. Historical API/browser/restart results and current prompt checks have separate scopes in [current evaluation](./docs/evaluation_current.md). Remote CI, other platforms and thousands-of-documents capacity remain unverified; manual semantic review is still required.
+A clean export of code checkpoint `3cf1bb6` (170 tracked files) passed Docker build/startup, all **1,406 tests in 21.71s**, lint/format, typing and migration-drift checks with fresh isolated volumes and a local provider substitute. It excluded real environment files/private data and used cached Docker layers. This verifies the exported source, not uncached downloads or universal platform support. Current local deployment preserves stored data and matches the application source. Live semantic evidence and remaining limitations are recorded separately in [current evaluation](./docs/evaluation_current.md). Check the [pull request](https://github.com/Dushyantnagar0/ai-document-vault/pull/2) for current hosted CI; older recorded runs remain historical. Manual semantic review and large-collection/platform validation remain separate.
 
 Routine tests use a separate Compose project, isolated database/volumes, a placeholder key and a local provider substitute. They do not need a real OpenAI key. Run from the repository root:
 
