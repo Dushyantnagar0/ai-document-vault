@@ -81,10 +81,12 @@ class ChatProcessor:
         embedder: AsyncEmbeddingProvider,
         *,
         reviewer: AsyncGenerationProvider,
+        answerer: AsyncGenerationProvider | None = None,
     ) -> None:
         self.engine, self.settings, self.store = engine, settings, store
         self.retriever, self.generator, self.embedder = retriever, generator, embedder
         self.reviewer = reviewer
+        self.answerer = generator if answerer is None else answerer
         self.semaphore = asyncio.Semaphore(settings.api_max_concurrent_ai_requests)
 
     async def _sample(
@@ -258,7 +260,7 @@ class ChatProcessor:
         )
         selected_quote_ids = {
             q for decision in reviewed.result.decisions for q in decision.quote_ids
-        } | {q for group in reviewed.result.required_qualifications for q in group.quote_ids}
+        } | {q for group in reviewed.result.required_aspects for q in group.quote_ids}
         metadata = {
             "prompt_version": CHAT_REVIEW_PROMPT_VERSION,
             "projection_version": PROJECTION_VERSION,
@@ -269,7 +271,7 @@ class ChatProcessor:
             "draft_evidence_status": draft.evidence_status,
             "unanswered_parts": reviewed.result.unanswered_parts,
             "force_qualification_quotes": False,
-            "qualification_policy": "retained_claim_source_bindings",
+            "qualification_policy": "required_aspect_source_bindings",
             "projection_status": "pending",
             "review_attempt": 2 if repair else 1,
             "review": reviewed.result.model_dump(mode="json"),
@@ -502,6 +504,7 @@ class ChatProcessor:
                         settings.chat_max_output_tokens,
                         "chat.answer",
                         settings.openai_generation_timeout_seconds,
+                        provider=self.answerer,
                     )
                     selection = (
                         exhaustive_selection_to_answer(

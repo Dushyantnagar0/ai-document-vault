@@ -98,6 +98,7 @@ class Settings(BaseSettings):
     retrieval_max_tokens: PositiveInt = 6400
     chat_prompt_max_tokens: PositiveInt = 12_000
     chat_max_output_tokens: PositiveInt = 1200
+    openai_answer_reasoning_effort: Literal["none", "low"] = "low"
 
     openai_embedding_timeout_seconds: PositiveSeconds = 15
     openai_generation_timeout_seconds: PositiveSeconds = 30
@@ -277,6 +278,7 @@ class Settings(BaseSettings):
             "retrieval_max_tokens",
             "chat_prompt_max_tokens",
             "chat_max_output_tokens",
+            "openai_answer_reasoning_effort",
             "evidence_review_max_output_tokens",
             "openai_review_reasoning_effort",
             "openai_embedding_timeout_seconds",

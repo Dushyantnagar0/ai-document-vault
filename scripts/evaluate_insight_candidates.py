@@ -15,7 +15,14 @@ from app.core.config import get_settings
 from app.db.models import DocumentInsights
 from app.domain.documents import ProcessingError
 from app.services.analysis_evidence import QuoteReference, build_quote_catalog
-from app.services.evidence_review import REVIEW_SYSTEM, ReviewOutput, prepare_review, project_review
+from app.services.analysis_review import (
+    ANALYSIS_REVIEW_PROMPT_VERSION,
+    ANALYSIS_REVIEW_SYSTEM,
+    INSIGHT_VALUE_PROJECTION_VERSION,
+    AnalysisReviewOutput,
+    project_analysis_review,
+)
+from app.services.evidence_review import prepare_review
 from app.services.insight_generation import generate_candidates
 from scripts.evaluate_ai import _atomic_write, evaluation_lock
 from scripts.evaluate_review import BUDGET_FILE, document_catalog, fingerprint, load_case
@@ -111,11 +118,15 @@ def run(
                 if existing:
                     if existing["binding"] != binding:
                         raise ValueError("FROZEN_INPUT_CHANGED")
+                    if existing.get("review_prompt_version") != ANALYSIS_REVIEW_PROMPT_VERSION:
+                        raise ValueError("INSIGHT_REVIEW_RECIPE_CHANGED")
                     continue
                 record: dict[str, Any] = {
                     "binding": binding,
                     "summary": summary,
                     "status": "started",
+                    "review_prompt_version": ANALYSIS_REVIEW_PROMPT_VERSION,
+                    "insight_projection_version": INSIGHT_VALUE_PROJECTION_VERSION,
                     "catalog": {
                         q: {"source_id": str(ref.source_id), "quote": ref.quote}
                         for q, ref in catalog.items()
@@ -159,13 +170,13 @@ def run(
                         profile="low",
                     )
                     audited = audit_provider.generate(
-                        schema=ReviewOutput,
-                        system=REVIEW_SYSTEM,
+                        schema=AnalysisReviewOutput,
+                        system=ANALYSIS_REVIEW_SYSTEM,
                         content=packet.content,
                         max_output_tokens=4096,
                         timeout_seconds=settings.openai_generation_timeout_seconds,
                     )
-                    projection = project_review(packet, audited.result)
+                    projection = project_analysis_review(packet, audited.result)
                     record.update(
                         status="completed",
                         review=audited.result.model_dump(mode="json"),

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db.models import Document, DocumentChunk, DocumentInsights, ProcessingAttempt
+from app.services.analysis_review import ANALYSIS_REVIEW_PROMPT_VERSION
 
 pytestmark = [
     pytest.mark.integration,
@@ -107,8 +108,8 @@ def test_real_ingestion_atomic_outputs_and_replay(format: str) -> None:
             saved = session.get(DocumentInsights, UUID(identifier))
             assert saved is not None
             review = saved.payload["evidence_review"]
-            assert review["prompt_version"] == "evidence-review-v4"
-            assert review["insight_prompt_version"] == "focused-insights-v1"
+            assert review["prompt_version"] == ANALYSIS_REVIEW_PROMPT_VERSION
+            assert review["insight_prompt_version"] == "focused-insights-v2"
             assert review["quote_catalog_version"] == "literal-sentences-v2"
             assert review["decisions"]["decisions"] and review["quote_bindings"]
             assert review["scope_complete"] and saved.payload["analysis_scope_complete"]

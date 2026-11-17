@@ -13,7 +13,14 @@ from app.core.config import Settings
 from app.domain.documents import AIFailureDetails, Chunk, Generated, ProcessingError
 from app.services.analysis import analyse_document
 from app.services.analysis_evidence import QUOTE_CATALOG_VERSION
-from app.services.evidence_review import PROJECTION_VERSION, REVIEW_PROMPT_VERSION
+from app.services.analysis_review import (
+    ANALYSIS_REVIEW_PROMPT_VERSION,
+    ANALYSIS_REVIEW_REPAIR,
+    ANALYSIS_REVIEW_SYSTEM,
+    INSIGHT_VALUE_PROJECTION_VERSION,
+    AnalysisReviewOutput,
+)
+from app.services.evidence_review import PROJECTION_VERSION
 from app.services.insight_generation import INSIGHT_PROMPT_VERSION
 
 pytestmark = pytest.mark.unit
@@ -92,12 +99,26 @@ class Reviewer:
             }
             for claim in request["claims"]
         ]
+        insights = [claim for claim in request["claims"] if claim["kind"] == "insights"]
         return Generated(
             result=kwargs["schema"].model_validate(
                 {
                     "decisions": decisions,
                     "required_qualifications": [],
                     "scope_complete": not self.partial,
+                    "insight_assessments": [
+                        {
+                            "block_index": index,
+                            "classification": "adds_conclusion",
+                            "conclusion_claim_ids": [
+                                claim["claim_id"]
+                                for claim in insights
+                                if claim["block_index"] == index
+                            ],
+                            "premise_quote_ids": [first],
+                        }
+                        for index in sorted({claim["block_index"] for claim in insights})
+                    ],
                 }
             ),
             model=Settings.CHAT_MODEL,
@@ -146,8 +167,10 @@ def test_final_summary_freezes_before_distinct_insights_and_review() -> None:
     assert result.payload["usage"]["known_input_tokens"] == 600
     assert result.payload["usage"]["known_output_tokens"] == 600
     review = result.payload["evidence_review"]
-    assert review["prompt_version"] == REVIEW_PROMPT_VERSION
+    assert review["prompt_version"] == ANALYSIS_REVIEW_PROMPT_VERSION
     assert review["projection_version"] == PROJECTION_VERSION
+    assert review["insight_value_projection_version"] == INSIGHT_VALUE_PROJECTION_VERSION
+    assert review["decisions"]["insight_assessments"][0]["classification"] == "adds_conclusion"
     assert review["insight_prompt_version"] == INSIGHT_PROMPT_VERSION
     assert review["quote_catalog_version"] == QUOTE_CATALOG_VERSION
     assert len(review["catalog_sha256"]) == 64
@@ -232,7 +255,6 @@ def test_quality_adapters_must_be_injected_together() -> None:
 
 def test_complete_review_prompt_limit_prevents_reservation_and_request(monkeypatch: Any) -> None:
     from app.services import analysis
-    from app.services.evidence_review import ReviewOutput
 
     real_counter = analysis.generation_prompt_tokens
     monkeypatch.setattr(
@@ -240,7 +262,8 @@ def test_complete_review_prompt_limit_prevents_reservation_and_request(monkeypat
         "generation_prompt_tokens",
         lambda schema, system, content: (
             Settings.CHAT_MODEL_MAX_INPUT_TOKENS + 1
-            if schema is ReviewOutput
+            if schema is AnalysisReviewOutput
+            and any(claim["text"] for claim in json.loads(content)["claims"])
             else real_counter(schema, system, content)
         ),
     )
@@ -295,7 +318,7 @@ def test_final_only_quality_review_uses_bounded_surviving_original_passages() ->
     draft, insights, reviewer = DraftGenerator(), InsightGenerator(), Reviewer()
     result = analyse_document(
         chunks,
-        config(analysis_group_max_tokens=1800),
+        config(analysis_group_max_tokens=6000),
         draft,
         lambda: 30,
         insight_generator=insights,
@@ -333,8 +356,6 @@ class QualificationReviewer(Reviewer):
 
 
 def test_invalid_qualification_review_repairs_same_packet_and_preserves_failed_usage() -> None:
-    from app.services.evidence_review import REVIEW_REPAIR, REVIEW_SYSTEM
-
     reviewer = QualificationReviewer()
     reservations: list[bool] = []
 
@@ -353,8 +374,8 @@ def test_invalid_qualification_review_repairs_same_packet_and_preserves_failed_u
     assert len(reviewer.calls) == 2
     assert len(reservations) == 4
     assert reviewer.calls[0]["content"] == reviewer.calls[1]["content"]
-    assert reviewer.calls[0]["system"] == REVIEW_SYSTEM
-    assert reviewer.calls[1]["system"] == REVIEW_SYSTEM + REVIEW_REPAIR
+    assert reviewer.calls[0]["system"] == ANALYSIS_REVIEW_SYSTEM
+    assert reviewer.calls[1]["system"] == ANALYSIS_REVIEW_SYSTEM + ANALYSIS_REVIEW_REPAIR
     assert "unknown-qualification-source" not in reviewer.calls[1]["content"]
     assert all(call["timeout_seconds"] == 9 for call in reviewer.calls)
     history = result.payload["usage"]["call_history"]
@@ -533,3 +554,31 @@ def test_local_review_schema_validation_failure_is_repairable() -> None:
     assert first["input_tokens"] == 101 and first["output_tokens"] == 51
     assert "invalid-schema-canary" not in json.dumps(result.payload)
     assert "invalid-schema-canary" not in reviewer.calls[1]["content"]
+
+
+def test_missing_insight_assessment_repairs_same_frozen_packet_once() -> None:
+    class MissingAssessmentReviewer(Reviewer):
+        def generate(self, **kwargs: Any) -> Generated[Any]:
+            response = super().generate(**kwargs)
+            if len(self.calls) == 1:
+                raw = response.result.model_dump(mode="json")
+                raw["insight_assessments"] = []
+                return Generated(raw, response.model, response.input_tokens, response.output_tokens)
+            return response
+
+    reviewer = MissingAssessmentReviewer()
+    result = analyse_document(
+        source(),
+        config(),
+        DraftGenerator(),
+        lambda: 30,
+        insight_generator=InsightGenerator(),
+        reviewer=reviewer,
+    )
+    assert len(reviewer.calls) == 2
+    assert reviewer.calls[0]["content"] == reviewer.calls[1]["content"]
+    assert all(call["schema"] is AnalysisReviewOutput for call in reviewer.calls)
+    first = result.payload["usage"]["call_history"][-2]
+    assert first["error_code"] == "EVIDENCE_REVIEW_INVALID"
+    assert first["diagnostics"]["reason"] == "insight_assessment_identity_mismatch"
+    assert result.payload["insights"]

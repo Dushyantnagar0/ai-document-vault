@@ -151,7 +151,11 @@ def _supplied_source_text(source: dict[str, Any]) -> str:
 
 
 def expected_versions(settings: Settings) -> dict[str, Any]:
-    """Only non-secret model/prompt/pipeline settings, matching persisted turns."""
+    """Match persisted turn recipes, including configured answer/review effort.
+
+    Changing effort makes earlier evidence stale without rewriting its settings
+    or implicitly sending another request.
+    """
     return {
         "saved_analysis_prompt": ANALYSIS_PROMPT_VERSION,
         "chat_model": settings.openai_chat_model,

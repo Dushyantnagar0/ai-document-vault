@@ -18,7 +18,20 @@ from app.core.config import get_settings
 from app.db.models import ChatTurn, Document, DocumentChunk, DocumentInsights
 from app.domain.documents import ProcessingError
 from app.services.analysis_evidence import QuoteReference, build_quote_catalog
-from app.services.evidence_review import REVIEW_SYSTEM, ReviewOutput, prepare_review, project_review
+from app.services.analysis_review import (
+    ANALYSIS_REVIEW_PROMPT_VERSION,
+    ANALYSIS_REVIEW_SYSTEM,
+    AnalysisReviewOutput,
+    project_analysis_review,
+)
+from app.services.chat_review import (
+    CHAT_REVIEW_PROMPT_VERSION,
+    CHAT_REVIEW_SYSTEM,
+    ChatReviewOutput,
+    compact_chat_packet,
+    project_chat_review,
+)
+from app.services.evidence_review import prepare_review
 from scripts.evaluate_ai import _atomic_write, _supplied_source_text, evaluation_lock
 from scripts.live_budget import BudgetError, RequestBudget
 
@@ -163,9 +176,20 @@ def run(cases: Sequence[str], effort: Literal["none", "low"], run_id: str) -> di
                     database.execute(text("SET TRANSACTION READ ONLY"))
                     draft, catalog, question = load_case(directory, database, key)
                 packet = prepare_review(draft, catalog, question=question)
+                is_chat = "answer" in packet.kinds
+                if not is_chat and len(draft.get("insights", [])) > 3:
+                    raise ValueError("FROZEN_INSIGHT_COUNT_EXCEEDS_CURRENT_REVIEW_LIMIT")
+                schema = ChatReviewOutput if is_chat else AnalysisReviewOutput
+                system = CHAT_REVIEW_SYSTEM if is_chat else ANALYSIS_REVIEW_SYSTEM
+                prompt_version = (
+                    CHAT_REVIEW_PROMPT_VERSION if is_chat else ANALYSIS_REVIEW_PROMPT_VERSION
+                )
+                if is_chat:
+                    packet = compact_chat_packet(packet)
                 request = {
-                    "schema": ReviewOutput.model_json_schema(),
-                    "system": REVIEW_SYSTEM,
+                    "schema": schema.model_json_schema(),
+                    "system": system,
+                    "prompt_version": prompt_version,
                     "content": packet.content,
                     "max_output_tokens": 4096,
                     "reasoning_effort": effort,
@@ -189,8 +213,8 @@ def run(cases: Sequence[str], effort: Literal["none", "low"], run_id: str) -> di
                 started = time.monotonic()
                 try:
                     response = OpenAIGenerationProvider(settings, reasoning_effort=effort).generate(
-                        schema=ReviewOutput,
-                        system=REVIEW_SYSTEM,
+                        schema=schema,
+                        system=system,
                         content=packet.content,
                         max_output_tokens=4096,
                         timeout_seconds=settings.openai_generation_timeout_seconds,
@@ -200,7 +224,13 @@ def run(cases: Sequence[str], effort: Literal["none", "low"], run_id: str) -> di
                         input_tokens=response.input_tokens,
                         output_tokens=response.output_tokens,
                     )
-                    projection = project_review(packet, response.result)
+                    projection = (
+                        project_chat_review(packet, response.result)
+                        if isinstance(response.result, ChatReviewOutput)
+                        else project_analysis_review(
+                            packet, AnalysisReviewOutput.model_validate(response.result)
+                        )
+                    )
                     record.update(
                         status="completed",
                         payload=projection.payload,

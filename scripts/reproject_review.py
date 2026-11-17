@@ -17,7 +17,20 @@ from app.db.models import ChatTurn, DocumentChunk
 from app.domain.conversation import Evidence
 from app.domain.documents import SourceSpan
 from app.services.analysis_evidence import QuoteReference
-from app.services.chat_review import ChatReviewOutput, compact_chat_packet, project_chat_review
+from app.services.analysis_review import (
+    ANALYSIS_REVIEW_PROMPT_VERSION,
+    AnalysisReviewOutput,
+    project_analysis_review,
+)
+from app.services.chat_review import (
+    CHAT_REVIEW_PROMPT_VERSION,
+    ChatReviewOutput,
+    LegacyChatReviewOutput,
+    compact_chat_packet,
+    parse_legacy_chat_review,
+    project_chat_review,
+    project_legacy_chat_review,
+)
 from app.services.evidence_review import (
     PROJECTION_VERSION,
     ReviewOutput,
@@ -30,7 +43,7 @@ from scripts.evaluate_ai import _atomic_write, _supplied_source_text
 from scripts.evaluate_review import fingerprint
 
 
-class _LegacyChatReviewOutput(ReviewOutput):
+class _EarlyChatReviewOutput(ReviewOutput):
     """Strict frozen v1/v2 contract, used only to replay historical records."""
 
     answerability: Literal["answered", "partial", "insufficient"]
@@ -47,15 +60,51 @@ def _review_schema_properties(record: dict[str, Any]) -> dict[str, Any]:
     return cast(dict[str, Any], properties)
 
 
-def _chat_review_for_replay(record: dict[str, Any]) -> tuple[ChatReviewOutput, bool]:
+def _review_prompt_version(record: dict[str, Any]) -> str | None:
+    versions = [
+        value
+        for value in (
+            record.get("review_prompt_version"),
+            record["request"].get("prompt_version"),
+        )
+        if value is not None
+    ]
+    if any(not isinstance(value, str) for value in versions) or len(set(versions)) > 1:
+        raise ValueError("INVALID_SAVED_REVIEW_VERSION")
+    return versions[0] if versions else None
+
+
+def _chat_review_for_replay(
+    record: dict[str, Any],
+) -> tuple[ChatReviewOutput | LegacyChatReviewOutput, bool]:
     properties = _review_schema_properties(record)
-    if "unanswered_parts" in record["review"] or "unanswered_parts" in properties:
+    version = _review_prompt_version(record)
+    legacy_versions = {f"chat-evidence-review-v{index}" for index in range(1, 7)}
+    if version is not None and version not in legacy_versions | {CHAT_REVIEW_PROMPT_VERSION}:
+        raise ValueError("UNKNOWN_SAVED_CHAT_REVIEW_VERSION")
+    if (
+        version == CHAT_REVIEW_PROMPT_VERSION
+        or "required_aspects" in record["review"]
+        or "required_aspects" in properties
+    ):
+        if version in legacy_versions:
+            raise ValueError("SAVED_REVIEW_VERSION_SCHEMA_MISMATCH")
         return ChatReviewOutput.model_validate(record["review"]), True
-    legacy = _LegacyChatReviewOutput.model_validate(record["review"])
+    if (
+        version in {f"chat-evidence-review-v{index}" for index in range(3, 7)}
+        or "unanswered_parts" in record["review"]
+        or "unanswered_parts" in properties
+    ):
+        # v3-v6 share this historical shape. Keep the actual saved version in
+        # replay metadata while deliberately choosing the legacy v6 parser.
+        return parse_legacy_chat_review(
+            record["review"], prompt_version="chat-evidence-review-v6"
+        ), True
+    legacy = _EarlyChatReviewOutput.model_validate(record["review"])
     # Historical partial verdicts did not record a missing-component label.
     # Reuse their strictly parsed typed selections for offline projection only;
-    # never invent a label or weaken the current provider validation contract.
-    return ChatReviewOutput.model_construct(
+    # never add an aspect inventory or weaken the current provider contract.
+    return LegacyChatReviewOutput.model_construct(
         required_qualifications=legacy.required_qualifications,
         decisions=legacy.decisions,
         scope_complete=legacy.scope_complete,
@@ -139,16 +188,34 @@ def replay_case(
 ) -> dict[str, Any]:
     packet = restore_packet(record)
     properties = _review_schema_properties(record)
-    has_relevance = any(
+    prompt_version = _review_prompt_version(record)
+    has_relevance = bool(prompt_version and prompt_version.startswith("chat-")) or any(
         name in record["review"] or name in properties
-        for name in ("answerability", "unanswered_parts")
+        for name in ("answerability", "unanswered_parts", "required_aspects")
     )
     missing_parts_available = False
+    aspect_inventory_available = False
+    insight_assessments_available = False
     if has_relevance:
         if force_qualification_quotes:
             raise ValueError("FORCE_MODE_CANNOT_BYPASS_CHAT_RELEVANCE")
         reviewed, missing_parts_available = _chat_review_for_replay(record)
-        projection = project_chat_review(packet, reviewed)
+        aspect_inventory_available = isinstance(reviewed, ChatReviewOutput)
+        projection = (
+            project_chat_review(packet, reviewed)
+            if isinstance(reviewed, ChatReviewOutput)
+            else project_legacy_chat_review(packet, reviewed)
+        )
+    elif (
+        prompt_version
+        in {"evidence-review-v6", "evidence-review-v7", ANALYSIS_REVIEW_PROMPT_VERSION}
+        or "insight_assessments" in record["review"]
+        or "insight_assessments" in properties
+    ):
+        projection = project_analysis_review(
+            packet, AnalysisReviewOutput.model_validate(record["review"])
+        )
+        insight_assessments_available = True
     else:
         projection = project_review(
             packet,
@@ -159,7 +226,10 @@ def replay_case(
         "projection_version": PROJECTION_VERSION,
         "paid_calls": 0,
         "relevance_enforced": has_relevance,
+        "review_prompt_version": prompt_version,
         "missing_parts_available": missing_parts_available,
+        "aspect_inventory_available": aspect_inventory_available,
+        "insight_assessments_available": insight_assessments_available,
         "force_qualification_quotes": force_qualification_quotes,
         "scope_complete": projection.scope_complete,
         "dropped_claim_ids": projection.dropped_claim_ids,

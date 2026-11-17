@@ -17,6 +17,21 @@ from uuid import UUID
 TEST_AUTHORIZATION = "Bearer test-placeholder-never-a-real-key"
 LOCK = threading.Lock()
 COUNTS: Counter[str] = Counter()
+REASONING_COUNTS: Counter[str] = Counter()
+REASONING_SCHEMAS = frozenset(
+    {
+        "PlannerOutput",
+        "AnswerOutput",
+        "AnswerSelectionOutput",
+        "ExhaustiveSelectionOutput",
+        "SelectionOutput",
+        "InsightCandidates",
+        "ChatReviewOutput",
+        "AnalysisReviewOutput",
+        "ReviewOutput",
+        "AnalysisOutput",
+    }
+)
 PLANNER_QUESTIONS: Counter[str] = Counter()
 ANSWER_QUESTIONS: Counter[str] = Counter()
 MARKER = re.compile(r"\[operational:([0-9a-f-]{36})\]")
@@ -279,6 +294,82 @@ def _review(content: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _analysis_review(content: dict[str, Any]) -> dict[str, Any]:
+    """Assess fixture copies conservatively without inventing useful conclusions."""
+    result = _review(content)
+    decisions = {item["claim_id"]: item for item in result["decisions"]}
+    summary = " ".join(item["text"] for item in content["claims"] if item["kind"] == "summary")
+    candidates: dict[int, list[dict[str, Any]]] = {}
+    for claim in content["claims"]:
+        if claim["kind"] == "insights":
+            candidates.setdefault(claim["block_index"], []).append(claim)
+    result["insight_assessments"] = [
+        {
+            "block_index": index,
+            "classification": "no_supported_conclusion"
+            if any(not decisions[item["claim_id"]]["supported"] for item in claims)
+            else "repeats_meaning"
+            if all(item["text"].strip() in summary for item in claims)
+            else "trivial_repackaging",
+            "conclusion_claim_ids": [],
+            "premise_quote_ids": [],
+        }
+        for index, claims in sorted(candidates.items())
+    ]
+    return result
+
+
+def _chat_review(content: dict[str, Any]) -> dict[str, Any]:
+    """Use the same small source-fact fixture vocabulary as answer generation.
+
+    Identify expected source facts before mapping literal draft coverage. This
+    exercises the current wire contract, not general semantic relevance or AI
+    coverage judgments. Unsupported fixture questions conservatively abstain.
+    """
+    expected = _answer({**content, "intent": _planner(content)["intent"], "complete_scope": True})
+    result = _review(content)
+    result.pop("required_qualifications")
+    claims = {item["claim_id"]: item for item in content["claims"]}
+    aspects = []
+    relevant = []
+    for block in expected["blocks"]:
+        quote = block["support_quotes"][0]["quote"]
+        passage = next(
+            item
+            for item in content["evidence"]
+            if item["source_id"] == block["source_ids"][0] and quote in item["text"]
+        )
+        covering = [
+            item["claim_id"]
+            for item in result["decisions"]
+            if item["supported"]
+            and passage["quote_id"] in item["quote_ids"]
+            and (
+                quote in claims[item["claim_id"]]["text"]
+                or claims[item["claim_id"]]["text"].strip() in quote
+            )
+        ][:8]
+        relevant.extend(covering)
+        label = re.sub(r"[\r\n\[\]]", " ", block["text"]).strip()[:120]
+        aspects.append(
+            {
+                "aspect": label,
+                "quote_ids": [passage["quote_id"]],
+                "conveyed_by_claim_ids": covering,
+            }
+        )
+    # An aspect supplement cannot rescue a draft without supported relevant prose.
+    answerable = bool(relevant)
+    result.update(
+        required_aspects=aspects if answerable else [],
+        scope_complete=answerable,
+        answerability="answered" if answerable else "insufficient",
+        relevant_claim_ids=list(dict.fromkeys(relevant)),
+        unanswered_parts=[],
+    )
+    return result
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         pass
@@ -322,6 +413,7 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 body = {
                     "counts": dict(COUNTS),
+                    "reasoning_efforts": dict(REASONING_COUNTS),
                     "planner_questions": dict(PLANNER_QUESTIONS),
                     "answer_questions": dict(ANSWER_QUESTIONS),
                 }
@@ -398,8 +490,19 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/chat/completions":
             content = json.loads(request["messages"][-1]["content"])
             schema = request.get("response_format", {}).get("json_schema", {}).get("name", "")
+            effort = request.get("reasoning_effort")
+            safe_effort = (
+                effort
+                if isinstance(effort, str) and effort in {"none", "low"}
+                else "missing"
+                if effort is None
+                else "other"
+            )
+            safe_schema = schema if schema in REASONING_SCHEMAS else "other"
             with LOCK:
                 COUNTS[schema] += 1
+                # Fixed schema/effort categories bound cardinality and retain no content.
+                REASONING_COUNTS[f"{safe_schema}:{safe_effort}"] += 1
                 if schema == "PlannerOutput":
                     PLANNER_QUESTIONS[_fingerprint(content["question"])] += 1
                 elif schema in {
@@ -451,20 +554,9 @@ class Handler(BaseHTTPRequestHandler):
                 # not fabricate a novel inference just to populate this field.
                 result = {"insights": []}
             elif schema == "ChatReviewOutput":
-                # Deterministic wiring fixture, not a semantic relevance judge.
-                result = _review(content)
-                relevant = [item["claim_id"] for item in result["decisions"] if item["supported"]]
-                result.update(
-                    answerability="insufficient"
-                    if not relevant
-                    else "answered"
-                    if result["scope_complete"]
-                    else "partial",
-                    relevant_claim_ids=relevant,
-                    unanswered_parts=[]
-                    if not relevant or result["scope_complete"]
-                    else ["remaining requested detail"],
-                )
+                result = _chat_review(content)
+            elif schema == "AnalysisReviewOutput":
+                result = _analysis_review(content)
             elif schema == "ReviewOutput":
                 result = _review(content)
             elif schema == "AnalysisOutput" or "items" in content:

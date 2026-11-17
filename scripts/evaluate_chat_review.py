@@ -156,6 +156,7 @@ async def generate_case(
         generator,
         cast(AsyncEmbeddingProvider, None),
         reviewer=reviewer,
+        answerer=generator,
     )
     complete_scope = bool(payload["complete_scope"])
     extractive = payload["intent"] == "exhaustive" and not complete_scope
@@ -174,6 +175,7 @@ async def generate_case(
             settings.chat_max_output_tokens,
             "chat.answer",
             settings.openai_generation_timeout_seconds,
+            provider=processor.answerer,
         )
         selection = (
             exhaustive_selection_to_answer(
@@ -264,7 +266,12 @@ async def run(source: Path, run_id: str, cases: Sequence[EvaluationCase]) -> dic
                 save()
                 generator = RecordingProvider(
                     AsyncBudgetedGenerationProvider(
-                        AsyncOpenAIGenerationProvider(settings), budget, f"frozen.{case.id}.draft"
+                        AsyncOpenAIGenerationProvider(
+                            settings, reasoning_effort=settings.openai_answer_reasoning_effort
+                        ),
+                        budget,
+                        f"frozen.{case.id}.draft",
+                        profile=settings.openai_answer_reasoning_effort,
                     ),
                     record,
                     save,

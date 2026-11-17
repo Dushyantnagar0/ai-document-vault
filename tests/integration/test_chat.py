@@ -23,6 +23,7 @@ from app.db.models import ChatTurn, Document, DocumentChunk, PerformanceSample
 from app.db.session import api_engine
 from app.domain.conversation import Replay, TurnReservation
 from app.domain.documents import Generated
+from app.prompts.chat import CHAT_PIPELINE_VERSION
 from app.services.chat import ChatProcessor
 from app.services.chat_review import CHAT_REVIEW_PROMPT_VERSION, ChatReviewOutput
 from app.services.conversations import TurnStore
@@ -141,6 +142,10 @@ def _count(stats: dict[str, Any], operation: str) -> int:
     return int(stats["counts"].get(operation, 0))
 
 
+def _reasoning_count(stats: dict[str, Any], schema: str, effort: str) -> int:
+    return int(stats["reasoning_efforts"].get(f"{schema}:{effort}", 0))
+
+
 def _question_count(stats: dict[str, Any], question: str) -> int:
     return int(stats["planner_questions"].get(hashlib.sha256(question.encode()).hexdigest(), 0))
 
@@ -161,6 +166,7 @@ def _turns(database: Engine, session_id: str) -> list[dict[str, Any]]:
                 "query": turn.retrieval_query,
                 "context": turn.context_snapshot,
                 "response": turn.response_body,
+                "versions": turn.versions,
             }
             for turn in rows
         ]
@@ -232,14 +238,29 @@ def test_grounded_followup_history_replay_and_persisted_vectors_reused(
         _count(after_calls, "AnswerSelectionOutput") - _count(before, "AnswerSelectionOutput") == 2
     )
     assert _count(after_calls, "ChatReviewOutput") - _count(before, "ChatReviewOutput") == 2
+    for schema, effort in (
+        ("PlannerOutput", "none"),
+        ("AnswerSelectionOutput", "low"),
+        ("ChatReviewOutput", "low"),
+    ):
+        assert (
+            _reasoning_count(after_calls, schema, effort) - _reasoning_count(before, schema, effort)
+            == 2
+        )
+        opposite = "none" if effort == "low" else "low"
+        assert _reasoning_count(after_calls, schema, opposite) == _reasoning_count(
+            before, schema, opposite
+        )
     assert _document_snapshot(database, identifier) == before_document
     turns = _turns(database, session_id)
     assert len(turns) == 2 and [turn["calls"] for turn in turns] == [4, 4]
     for turn in turns:
+        assert turn["versions"]["pipeline"] == CHAT_PIPELINE_VERSION
+        assert turn["versions"]["configuration"]["openai_answer_reasoning_effort"] == "low"
         review = turn["context"]["evidence_review"]
         assert review["prompt_version"] == CHAT_REVIEW_PROMPT_VERSION
         assert review["scope_complete"] and not review["force_qualification_quotes"]
-        assert review["qualification_policy"] == "retained_claim_source_bindings"
+        assert review["qualification_policy"] == "required_aspect_source_bindings"
         assert review["review"]["decisions"] and review["quote_bindings"]
         assert review["claims"] and len(review["request_sha256"]) == 64
         with Session(database) as session:
@@ -257,6 +278,64 @@ def test_grounded_followup_history_replay_and_persisted_vectors_reused(
     assert [message["sequence"] for message in messages] == [1, 2, 3, 4]
     assert [message["role"] for message in messages] == ["user", "assistant", "user", "assistant"]
     assert all(message["turn_status"] == "COMPLETED" for message in messages)
+
+
+def test_answer_reasoning_none_override_is_persisted_and_replayed(
+    api: httpx.Client, database: Engine, documents: dict[str, str]
+) -> None:
+    """A dedicated injected provider uses the override; HTTP replay spends nothing."""
+    session_id = _session(api, documents["juniper"])
+    question, request_id = "Who owns this agreement?", str(uuid4())
+    before = _stats()
+
+    async def execute() -> Replay:
+        settings = get_settings().model_copy(update={"openai_answer_reasoning_effort": "none"})
+        engine = api_engine(settings)
+        try:
+            store = TurnStore(engine, settings)
+            processor = ChatProcessor(
+                engine,
+                settings,
+                store,
+                PgVectorRetriever(engine),
+                AsyncOpenAIGenerationProvider(settings, reasoning_effort="none"),
+                AsyncOpenAIEmbeddingProvider(settings),
+                answerer=AsyncOpenAIGenerationProvider(
+                    settings, reasoning_effort=settings.openai_answer_reasoning_effort
+                ),
+                reviewer=AsyncOpenAIGenerationProvider(
+                    settings, reasoning_effort=settings.openai_review_reasoning_effort
+                ),
+            )
+            reserved = await store.reserve(
+                UUID(session_id), UUID(request_id), question, str(uuid4())
+            )
+            assert isinstance(reserved, TurnReservation)
+            return await processor.run(reserved)
+        finally:
+            await engine.dispose()
+
+    result = asyncio.run(execute())
+    assert result.status == 200 and "Priya Shah" in result.body["answer"]
+    after = _stats()
+    for schema, effort in (
+        ("PlannerOutput", "none"),
+        ("AnswerSelectionOutput", "none"),
+        ("ChatReviewOutput", "low"),
+    ):
+        assert (
+            _reasoning_count(after, schema, effort) - _reasoning_count(before, schema, effort) == 1
+        )
+    assert _reasoning_count(after, "AnswerSelectionOutput", "low") == _reasoning_count(
+        before, "AnswerSelectionOutput", "low"
+    )
+    turn = _turns(database, session_id)[0]
+    assert turn["calls"] == 4
+    assert turn["versions"]["configuration"]["openai_answer_reasoning_effort"] == "none"
+    assert turn["versions"]["configuration"]["openai_review_reasoning_effort"] == "low"
+    assert turn["versions"]["configuration"]["chat_max_output_tokens"] == 1200
+    assert _ask(api, session_id, question, request_id).json() == result.body
+    assert _stats() == after
 
 
 def test_session_filter_pagination_and_wrong_document_isolation(
@@ -381,10 +460,14 @@ def test_invalid_review_retains_bounded_audit_and_replay_spends_no_calls(
             return Generated(
                 ChatReviewOutput.model_validate(
                     {
-                        "required_qualifications": []
-                        if valid
-                        else [
-                            {"quote_ids": ["missing-source-canary"], "conveyed_by_claim_ids": []}
+                        "required_aspects": [
+                            {
+                                "aspect": "Agreement owner",
+                                "quote_ids": [packet["evidence"][0]["quote_id"]]
+                                if valid
+                                else ["missing-source-canary"],
+                                "conveyed_by_claim_ids": [],
+                            }
                         ],
                         "decisions": [
                             {
@@ -460,7 +543,7 @@ def test_invalid_review_retains_bounded_audit_and_replay_spends_no_calls(
         assert turns[0]["status"] == "COMPLETED" and history[-1]["status"] == "COMPLETED"
         assert review["projection_status"] == "completed"
         assert "projection_error" not in review
-        assert review["review"]["required_qualifications"] == []
+        assert review["review"]["required_aspects"][0]["aspect"] == "Agreement owner"
         assert history[-1]["content"] == result.body["answer"]
         _citations(database, result.body, documents["juniper"])
     else:
@@ -471,9 +554,7 @@ def test_invalid_review_retains_bounded_audit_and_replay_spends_no_calls(
         assert turns[0]["status"] == "FAILED" and history[-1]["status"] == "FAILED"
         assert review["projection_status"] == "failed"
         assert review["projection_error"]["reason"] == "invalid_qualification_selection"
-        assert review["review"]["required_qualifications"][0]["quote_ids"] == [
-            "missing-source-canary"
-        ]
+        assert review["review"]["required_aspects"][0]["quote_ids"] == ["missing-source-canary"]
         assert history[-1]["content"] == result.body["error"]["message"]
     before_replay = _stats()
     replay = _ask(api, session_id, question, request_id)
@@ -535,8 +616,9 @@ def test_irrelevant_but_source_valid_draft_abstains_and_replays_without_calls(
                         "unanswered_parts": [],
                         "relevant_claim_ids": [],
                         "scope_complete": False,
-                        "required_qualifications": [
+                        "required_aspects": [
                             {
+                                "aspect": "Unrelated source material",
                                 "quote_ids": [packet["evidence"][0]["quote_id"]],
                                 "conveyed_by_claim_ids": [],
                             }

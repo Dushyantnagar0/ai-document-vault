@@ -107,6 +107,7 @@ def test_provider_key_is_required_and_nonblank(key: str | None) -> None:
         ({"insight_max_output_tokens": 128001}, "model output capacity"),
         ({"insight_max_visible_tokens": 3073}, "Visible insight budget"),
         ({"openai_review_reasoning_effort": "high"}, "openai_review_reasoning_effort"),
+        ({"openai_answer_reasoning_effort": "high"}, "openai_answer_reasoning_effort"),
         ({"analysis_group_max_tokens": 270977}, "model input capacity"),
         ({"analysis_max_output_tokens": 12000}, "reduction output"),
         ({"processing_deadline_seconds": 29}, "Provider timeouts"),
@@ -147,6 +148,24 @@ def test_review_recipe_is_persistable_and_visible_insight_limit_is_independent(
     assert configured.chat_configuration["openai_review_reasoning_effort"] == "none"
     assert configured.insight_max_visible_tokens == 700
     assert configured.insight_max_output_tokens == 4096
+
+
+@pytest.mark.parametrize("effort", ["none", "low"])
+def test_answer_reasoning_recipe_is_independent_and_persistable(
+    settings: Callable[..., Settings], effort: str
+) -> None:
+    configured = settings(openai_answer_reasoning_effort=effort)
+    assert configured.chat_configuration["openai_answer_reasoning_effort"] == effort
+    assert configured.openai_review_reasoning_effort == "low"
+    assert configured.chat_max_output_tokens == 1200
+
+
+def test_answer_reasoning_accepts_explicit_environment_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_ANSWER_REASONING_EFFORT", "none")
+    configured = Settings(_env_file=None, openai_api_key="test-placeholder")
+    assert configured.chat_configuration["openai_answer_reasoning_effort"] == "none"
 
 
 def test_exact_model_input_and_combined_context_bounds(

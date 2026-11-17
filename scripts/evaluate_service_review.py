@@ -33,8 +33,9 @@ from app.db.profiles import profile_values
 from app.db.session import api_engine
 from app.domain.conversation import Replay, TurnReservation
 from app.services.chat import ChatProcessor
+from app.services.chat_review import CHAT_REVIEW_PROMPT_VERSION
 from app.services.conversations import TurnStore
-from scripts.evaluate_ai import _atomic_write, evaluation_lock, validate_run_id
+from scripts.evaluate_ai import _atomic_write, evaluation_lock, expected_versions, validate_run_id
 from scripts.evaluate_review import BUDGET_FILE
 from scripts.live_budget import (
     AsyncBudgetedEmbeddingProvider,
@@ -187,10 +188,21 @@ async def run(settings: Settings, run_id: str, document_id: UUID, suite: str) ->
         budget = RequestBudget(directory / BUDGET_FILE, limit=100)
         state = initialize_run(path, document_id, suite)
         state["budget_before"] = budget.snapshot()
+        # This run reuses an existing document; its saved analysis can have an
+        # older prompt. Record the current chat recipe without relabeling it.
+        state["recipe"] = {
+            **{
+                name: value
+                for name, value in expected_versions(settings).items()
+                if name != "saved_analysis_prompt"
+            },
+            "review_prompt": CHAT_REVIEW_PROMPT_VERSION,
+        }
 
         def save() -> None:
             _atomic_write(path, json.dumps(state, ensure_ascii=False, indent=2).encode())
 
+        save()
         engine = api_engine(settings)
         try:
             await preflight_and_create(engine, settings, state)
@@ -202,7 +214,7 @@ async def run(settings: Settings, run_id: str, document_id: UUID, suite: str) ->
                 store,
                 PgVectorRetriever(engine),
                 AsyncBudgetedGenerationProvider(
-                    AsyncOpenAIGenerationProvider(settings), budget, "service.generation"
+                    AsyncOpenAIGenerationProvider(settings), budget, "service.planner"
                 ),
                 AsyncBudgetedEmbeddingProvider(
                     AsyncOpenAIEmbeddingProvider(settings),
@@ -217,6 +229,14 @@ async def run(settings: Settings, run_id: str, document_id: UUID, suite: str) ->
                     budget,
                     "service.review",
                     profile=settings.openai_review_reasoning_effort,
+                ),
+                answerer=AsyncBudgetedGenerationProvider(
+                    AsyncOpenAIGenerationProvider(
+                        settings, reasoning_effort=settings.openai_answer_reasoning_effort
+                    ),
+                    budget,
+                    "service.answer",
+                    profile=settings.openai_answer_reasoning_effort,
                 ),
             )
             for case in state["cases"]:

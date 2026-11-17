@@ -60,8 +60,11 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         settings,
         store,
         PgVectorRetriever(engine),
-        AsyncOpenAIGenerationProvider(settings),
+        AsyncOpenAIGenerationProvider(settings, reasoning_effort="none"),
         AsyncOpenAIEmbeddingProvider(settings),
+        answerer=AsyncOpenAIGenerationProvider(
+            settings, reasoning_effort=settings.openai_answer_reasoning_effort
+        ),
         reviewer=AsyncOpenAIGenerationProvider(
             settings, reasoning_effort=settings.openai_review_reasoning_effort
         ),
@@ -84,7 +87,12 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         while True:
             try:
                 storage = await asyncio.to_thread(LocalFileStorage, settings.local_storage_dir)
-                await run_maintenance(engine, storage)
+                result = await run_maintenance(engine, storage)
+                if result.performance_backlog_remaining:
+                    logging.getLogger(__name__).warning(
+                        "Telemetry retention backlog remains after deleting %s expired samples",
+                        result.performance_samples_deleted,
+                    )
             except Exception as error:
                 logging.getLogger(__name__).warning(
                     "Maintenance deferred [%s]", type(error).__name__

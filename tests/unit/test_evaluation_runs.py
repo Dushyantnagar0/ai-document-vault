@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, Mock
 from uuid import uuid4
 
@@ -68,6 +68,29 @@ def test_changed_recipe_refuses_run_resume_before_transport(
         make_runner(tmp_path, "frozen")
     assert original.path.read_bytes() == original_bytes
     original.client.request.assert_not_called()
+
+
+def test_answer_effort_change_invalidates_run_recipe_without_altering_saved_evidence(
+    tmp_path: Path,
+) -> None:
+    original = make_runner(tmp_path, "effort-bound")
+    original.save()
+    original_bytes = original.path.read_bytes()
+    observed = original.state["recipe"]["versions"]["configuration"]
+    assert observed["openai_answer_reasoning_effort"] == "low"
+    changed = Settings(
+        _env_file=None,
+        openai_api_key="test-placeholder",
+        local_storage_dir=tmp_path,
+        openai_answer_reasoning_effort="none",
+    )
+    with pytest.raises(EvaluationFailure, match="RUN_RECIPE_CHANGED_USE_NEW_RUN_ID"):
+        EvaluationRunner(
+            changed, original.client, original.engine, original.path, run_id="effort-bound"
+        )
+    assert original.path.read_bytes() == original_bytes
+    cast(Mock, original.client).request.assert_not_called()
+    cast(Mock, original.engine).assert_not_called()
 
 
 def test_namespaced_run_refuses_revision_mix(tmp_path: Path) -> None:

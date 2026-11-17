@@ -37,14 +37,13 @@ def packet(question: str = "Explain Kafka.") -> ReviewPacket:
 
 
 def verdict(**changes: Any) -> dict[str, Any]:
-    return {
+    result = {
         "answerability": "answered",
         "unanswered_parts": ["requested measured lag duration"]
         if changes.get("answerability") == "partial"
         else [],
         "relevant_claim_ids": ["a1.1", "a2.1"],
         "scope_complete": True,
-        "required_qualifications": [],
         "decisions": [
             {
                 "claim_id": "a1.1",
@@ -61,9 +60,40 @@ def verdict(**changes: Any) -> dict[str, Any]:
         ],
         **changes,
     }
+    aspects = changes.get("required_aspects")
+    if aspects is None:
+        aspects = [
+            {
+                "aspect": f"Requested relationship {index}",
+                "quote_ids": [f"q{index}"],
+                "conveyed_by_claim_ids": [claim_id],
+            }
+            for index, claim_id in ((1, "a1.1"), (2, "a2.1"))
+            if claim_id in result["relevant_claim_ids"]
+        ]
+        if not aspects and result["answerability"] == "answered":
+            aspects = [
+                {
+                    "aspect": "Requested relationship",
+                    "quote_ids": ["q1"],
+                    "conveyed_by_claim_ids": ["a1.1"],
+                }
+            ]
+    if result["answerability"] == "partial":
+        aspects = [
+            *aspects,
+            *[
+                {"aspect": label.strip(), "quote_ids": [], "conveyed_by_claim_ids": []}
+                for label in dict.fromkeys(result["unanswered_parts"])
+            ],
+        ]
+    result["required_aspects"] = aspects
+    return result
 
 
-@pytest.mark.parametrize("missing", ["answerability", "relevant_claim_ids", "unanswered_parts"])
+@pytest.mark.parametrize(
+    "missing", ["answerability", "relevant_claim_ids", "unanswered_parts", "required_aspects"]
+)
 def test_chat_relevance_judgments_are_required_not_defaulted(missing: str) -> None:
     raw = verdict()
     raw.pop(missing)
@@ -76,7 +106,13 @@ def test_valid_citations_do_not_rescue_unanswerable_unrelated_background(questio
     raw = verdict(
         answerability="insufficient",
         relevant_claim_ids=[],
-        required_qualifications=[{"quote_ids": ["q3"], "conveyed_by_claim_ids": []}],
+        required_aspects=[
+            {
+                "aspect": "Freshness condition for read routing",
+                "quote_ids": ["q3"],
+                "conveyed_by_claim_ids": [],
+            }
+        ],
     )
     result = project_chat_review(packet(question), ChatReviewOutput.model_validate(raw))
     assert result.payload == {"answer": []}
@@ -111,6 +147,131 @@ def test_genuine_partial_keeps_only_relevant_audited_prose() -> None:
     assert not result.scope_complete
 
 
+@pytest.mark.parametrize("same_block", [False, True])
+@pytest.mark.parametrize("unrelated_supported", [False, True])
+def test_complete_fee_answer_survives_irrelevant_primary_write_pruning(
+    same_block: bool, unrelated_supported: bool
+) -> None:
+    fee, unrelated = "The fee is 480 credits.", "The primary handles writes."
+    blocks = (
+        [{"text": fee + " " + unrelated}]
+        if same_block
+        else [
+            {"text": fee},
+            {"text": unrelated},
+        ]
+    )
+    original = prepare_review(
+        {"answer": blocks},
+        {
+            "q1": QuoteReference(UUID(int=1), fee),
+            "q2": QuoteReference(UUID(int=2), unrelated),
+        },
+        question="What is the fee?",
+    )
+    raw = verdict(relevant_claim_ids=["a1.1"])
+    raw["decisions"][1].update(
+        claim_id="a1.2" if same_block else "a2.1",
+        supported=unrelated_supported,
+        quote_ids=["q2"] if unrelated_supported else [],
+    )
+    result = project_chat_review(original, ChatReviewOutput.model_validate(raw))
+    assert [block["text"].strip() for block in result.payload["answer"]] == [fee]
+    assert result.payload["answer"][0]["support_quotes"] == [
+        {"source_id": str(UUID(int=1)), "quote": fee}
+    ]
+    assert result.dropped_claim_ids == ("a1.2" if same_block else "a2.1",)
+    assert result.scope_complete
+
+
+@pytest.mark.parametrize("failure", ["unsupported", "empty_support", "copied_anchor"])
+def test_loss_of_a_relevant_claim_still_narrows_answer_scope(failure: str) -> None:
+    original = packet("Explain the primary and Condition 40.")
+    raw = verdict()
+    if failure == "unsupported":
+        raw["decisions"][1]["supported"] = False
+    elif failure == "empty_support":
+        raw["decisions"][1]["quote_ids"] = []
+    else:
+        original = prepare_review(
+            {
+                "answer": [
+                    {"text": "The primary handles writes."},
+                    {"text": "Condition 40 applies."},
+                ]
+            },
+            {**original.catalog, "q4": QuoteReference(UUID(int=4), "Condition 40 applies.")},
+            question="Explain the primary and Condition 40.",
+        )
+        # The reviewer selects a valid but wrong passage for this copied anchor.
+    result = project_chat_review(original, ChatReviewOutput.model_validate(raw))
+    assert result.payload["answer"][0]["text"] == "The primary handles writes."
+    assert result.dropped_claim_ids == ("a2.1",)
+    assert not result.scope_complete
+
+
+def test_pruned_irrelevant_anchor_failure_does_not_narrow_requested_scope() -> None:
+    original = prepare_review(
+        {"answer": [{"text": "The fee is 480 credits."}, {"text": "Condition 40 applies."}]},
+        {
+            "q1": QuoteReference(UUID(int=1), "The fee is 480 credits."),
+            "q2": QuoteReference(UUID(int=2), "The primary handles writes."),
+            "q3": QuoteReference(UUID(int=3), "Condition 40 applies."),
+        },
+        question="What is the fee?",
+    )
+    result = project_chat_review(
+        original, ChatReviewOutput.model_validate(verdict(relevant_claim_ids=["a1.1"]))
+    )
+    assert result.scope_complete
+    assert result.dropped_claim_ids == ("a2.1",)
+    assert result.payload["answer"][0]["text"] == "The fee is 480 credits."
+
+
+@pytest.mark.parametrize("loss", ["relevant_claim", "qualification"])
+def test_projection_capacity_loss_still_narrows_requested_scope(loss: str) -> None:
+    count = 9 if loss == "relevant_claim" else 8
+    original = prepare_review(
+        {"answer": [{"text": f"Requested fact {index}."} for index in range(1, count + 1)]},
+        {
+            **{
+                f"q{index}": QuoteReference(UUID(int=index), f"Requested fact {index}.")
+                for index in range(1, count + 1)
+            },
+            "caveat": QuoteReference(UUID(int=100), "This applies only after approval."),
+        },
+        question="Explain the requested facts and conditions.",
+    )
+    raw = verdict(
+        relevant_claim_ids=[claim.id for claim in original.claims],
+        decisions=[
+            {
+                "claim_id": claim.id,
+                "supported": True,
+                "quote_ids": [f"q{index}"],
+                "redundant_with": [],
+            }
+            for index, claim in enumerate(original.claims, start=1)
+        ],
+        required_aspects=[
+            {"aspect": "Approval requirement", "quote_ids": ["caveat"], "conveyed_by_claim_ids": []}
+        ]
+        if loss == "qualification"
+        else [
+            {
+                "aspect": "Requested first fact",
+                "quote_ids": ["q1"],
+                "conveyed_by_claim_ids": ["a1.1"],
+            }
+        ],
+    )
+    result = project_chat_review(original, ChatReviewOutput.model_validate(raw))
+    assert len(result.payload["answer"]) == 8
+    assert not result.scope_complete
+    assert result.dropped_claim_ids == (("a9.1",) if loss == "relevant_claim" else ())
+    assert result.appended_quote_ids == ()
+
+
 @pytest.mark.parametrize(
     "question", ["How do standby copies behave?", "Will those always show the latest writes?"]
 )
@@ -141,7 +302,13 @@ def test_abstention_does_not_bypass_shared_source_identity_checks(selection: str
     if selection == "support":
         raw["decisions"][0]["quote_ids"] = ["unknown"]
     elif selection == "qualification":
-        raw["required_qualifications"] = [{"quote_ids": ["unknown"], "conveyed_by_claim_ids": []}]
+        raw["required_aspects"] = [
+            {
+                "aspect": "Requested relationship",
+                "quote_ids": ["unknown"],
+                "conveyed_by_claim_ids": [],
+            }
+        ]
     else:
         raw["decisions"][0]["claim_id"] = "unknown"
     with pytest.raises(ProcessingError) as failure:
@@ -153,7 +320,13 @@ def test_qualification_covering_only_irrelevant_claims_is_not_reattached() -> No
     raw = verdict(
         answerability="partial",
         relevant_claim_ids=["a2.1"],
-        required_qualifications=[{"quote_ids": ["q1"], "conveyed_by_claim_ids": ["a1.1"]}],
+        required_aspects=[
+            {
+                "aspect": "Primary write handling",
+                "quote_ids": ["q1"],
+                "conveyed_by_claim_ids": ["a1.1"],
+            }
+        ],
     )
     result = project_chat_review(packet(), ChatReviewOutput.model_validate(raw))
     assert [b["text"] for b in result.payload["answer"]] == ["Replicas can lag."]
@@ -164,7 +337,13 @@ def test_unconveyed_qualification_still_restores_original_caveat() -> None:
     raw = verdict(
         answerability="partial",
         relevant_claim_ids=["a2.1"],
-        required_qualifications=[{"quote_ids": ["q3"], "conveyed_by_claim_ids": []}],
+        required_aspects=[
+            {
+                "aspect": "Freshness condition for read routing",
+                "quote_ids": ["q3"],
+                "conveyed_by_claim_ids": [],
+            }
+        ],
     )
     result = project_chat_review(packet(), ChatReviewOutput.model_validate(raw))
     assert [b["text"] for b in result.payload["answer"]] == [
@@ -177,7 +356,13 @@ def test_unconveyed_qualification_still_restores_original_caveat() -> None:
 def test_no_supported_relevant_prose_cannot_be_rescued_by_qualification_excerpts() -> None:
     raw = verdict(
         relevant_claim_ids=["a2.1"],
-        required_qualifications=[{"quote_ids": ["q3"], "conveyed_by_claim_ids": []}],
+        required_aspects=[
+            {
+                "aspect": "Freshness condition for read routing",
+                "quote_ids": ["q3"],
+                "conveyed_by_claim_ids": [],
+            }
+        ],
     )
     raw["decisions"][1]["supported"] = False
     result = project_chat_review(packet(), ChatReviewOutput.model_validate(raw))

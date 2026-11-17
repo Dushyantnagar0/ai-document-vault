@@ -17,7 +17,11 @@ from app.domain.documents import Chunk, ProcessingError, SourceSpan
 from app.prompts.analysis import ANALYSIS_PROMPT_VERSION
 from app.services.analysis import analyse_document
 from app.services.analysis_evidence import QUOTE_CATALOG_VERSION
-from app.services.evidence_review import PROJECTION_VERSION, REVIEW_PROMPT_VERSION
+from app.services.analysis_review import (
+    ANALYSIS_REVIEW_PROMPT_VERSION,
+    INSIGHT_VALUE_PROJECTION_VERSION,
+)
+from app.services.evidence_review import PROJECTION_VERSION
 from scripts.evaluate_ai import _atomic_write, evaluation_lock, validate_run_id
 from scripts.evaluate_quality import analysis_indicators
 from scripts.evaluate_review import BUDGET_FILE, fingerprint
@@ -67,8 +71,9 @@ def run(run_id: str, cases: list[str]) -> dict[str, Any]:
     budget = RequestBudget(directory / BUDGET_FILE, limit=100)
     recipe = {
         "analysis": ANALYSIS_PROMPT_VERSION,
-        "review": REVIEW_PROMPT_VERSION,
+        "review": ANALYSIS_REVIEW_PROMPT_VERSION,
         "projection": PROJECTION_VERSION,
+        "insight_projection": INSIGHT_VALUE_PROJECTION_VERSION,
         "quote_catalog": QUOTE_CATALOG_VERSION,
         "model": settings.openai_chat_model,
         "group_input": settings.analysis_group_max_tokens,

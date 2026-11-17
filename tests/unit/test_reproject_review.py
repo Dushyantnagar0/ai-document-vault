@@ -13,9 +13,15 @@ import pytest
 from app.db.models import ChatTurn
 from app.domain.conversation import Evidence
 from app.services.analysis_evidence import QuoteReference
+from app.services.analysis_review import ANALYSIS_REVIEW_PROMPT_VERSION, AnalysisReviewOutput
 from app.services.chat_context import answer_quote_catalog
-from app.services.chat_review import ChatReviewOutput, compact_chat_packet
-from app.services.evidence_review import prepare_review
+from app.services.chat_review import (
+    CHAT_REVIEW_PROMPT_VERSION,
+    ChatReviewOutput,
+    LegacyChatReviewOutput,
+    compact_chat_packet,
+)
+from app.services.evidence_review import ReviewOutput, prepare_review
 from scripts.evaluate_review import fingerprint
 from scripts.reproject_review import replay_case, restore_packet
 from scripts.reproject_service_review import _stored_audit_record
@@ -90,15 +96,16 @@ def test_projection_only_result_does_not_claim_renderer_evidence() -> None:
     assert "citations" not in result
 
 
-def test_new_chat_review_replay_abstains_without_reattaching_qualifications() -> None:
+def test_legacy_chat_review_replay_abstains_without_reattaching_qualifications() -> None:
     record = saved_record()
     record["review"].update(
         answerability="insufficient", relevant_claim_ids=[], unanswered_parts=[]
     )
-    record["request"]["schema"] = ChatReviewOutput.model_json_schema()
+    record["request"]["schema"] = LegacyChatReviewOutput.model_json_schema()
     record["request_sha256"] = fingerprint(record["request"])
     result = replay_case(record)
     assert result["relevance_enforced"] is True
+    assert result["aspect_inventory_available"] is False
     assert result["payload"] == {"answer": []}
     assert result["appended_quote_ids"] == ()
     assert not result["scope_complete"]
@@ -219,10 +226,10 @@ def test_legacy_chat_replay_preserves_frozen_status_without_inventing_missing_pa
         assert result["scope_complete"] is False
 
 
-def test_current_chat_replay_requires_declared_missing_parts_field() -> None:
+def test_legacy_chat_replay_requires_declared_missing_parts_field() -> None:
     record = compact_saved_record()
     record["review"].update(answerability="answered", relevant_claim_ids=["a1.1"])
-    record["request"]["schema"] = ChatReviewOutput.model_json_schema()
+    record["request"]["schema"] = LegacyChatReviewOutput.model_json_schema()
     record["request_sha256"] = fingerprint(record["request"])
     with pytest.raises(ValueError):
         replay_case(record)
@@ -232,7 +239,7 @@ def test_current_chat_replay_requires_declared_missing_parts_field() -> None:
     "status,parts",
     [("answered", []), ("partial", ["measured restore duration"]), ("insufficient", [])],
 )
-def test_current_chat_replay_reports_actual_missing_parts_available(
+def test_legacy_chat_replay_reports_actual_missing_parts_available(
     status: str, parts: list[str]
 ) -> None:
     record = compact_saved_record()
@@ -242,13 +249,14 @@ def test_current_chat_replay_reports_actual_missing_parts_available(
         unanswered_parts=parts,
         scope_complete=status == "answered",
     )
-    record["request"]["schema"] = ChatReviewOutput.model_json_schema()
+    record["request"]["schema"] = LegacyChatReviewOutput.model_json_schema()
     record["request_sha256"] = fingerprint(record["request"])
     result = replay_case(record)
     assert result["missing_parts_available"] is True
+    assert result["aspect_inventory_available"] is False
 
 
-def test_raw_missing_parts_select_current_validation_without_schema_metadata() -> None:
+def test_raw_missing_parts_select_legacy_validation_without_schema_metadata() -> None:
     record = saved_record()
     record["review"].update(
         answerability="partial",
@@ -262,7 +270,7 @@ def test_raw_missing_parts_select_current_validation_without_schema_metadata() -
         replay_case(record)
 
 
-def test_current_partial_replay_renders_missing_request_metadata_without_a_citation() -> None:
+def test_legacy_partial_replay_renders_missing_request_metadata_without_a_citation() -> None:
     record = saved_record()
     record["request"]["schema"] = {"properties": {"unanswered_parts": {}}}
     record["request_sha256"] = fingerprint(record["request"])
@@ -321,10 +329,148 @@ def test_advertised_current_schema_cannot_fall_back_to_source_only_review() -> N
         replay_case(record)
 
 
-@pytest.mark.parametrize("compact,with_gaps", [(False, False), (True, False), (True, True)])
+def current_chat_record() -> dict[str, Any]:
+    record = compact_saved_record()
+    record["review"].pop("required_qualifications")
+    record["review"].update(
+        required_aspects=[
+            {
+                "aspect": "Deletion prevention while a hold remains active",
+                "quote_ids": ["q1"],
+                "conveyed_by_claim_ids": ["a1.1"],
+            },
+            {
+                "aspect": "Release preserves the ordinary retention clock",
+                "quote_ids": ["q2"],
+                "conveyed_by_claim_ids": [],
+            },
+        ],
+        answerability="answered",
+        relevant_claim_ids=["a1.1"],
+        unanswered_parts=[],
+    )
+    record["request"].update(
+        schema=ChatReviewOutput.model_json_schema(), prompt_version=CHAT_REVIEW_PROMPT_VERSION
+    )
+    record["request_sha256"] = fingerprint(record["request"])
+    return record
+
+
+def test_current_chat_replay_enforces_saved_aspects_without_changing_frozen_record() -> None:
+    record = current_chat_record()
+    before = deepcopy(record)
+    result = replay_case(record)
+    assert result["aspect_inventory_available"] is True
+    assert result["review_prompt_version"] == CHAT_REVIEW_PROMPT_VERSION
+    assert result["appended_quote_ids"] == ("q2",)
+    assert result["scope_complete"] is True
+    assert record == before
+
+
+@pytest.mark.parametrize("selector", ["schema", "version", "both"])
+def test_current_chat_replay_never_synthesizes_missing_aspect_inventory(selector: str) -> None:
+    record = current_chat_record()
+    record["review"].pop("required_aspects")
+    record["review"]["required_qualifications"] = []
+    if selector == "schema":
+        record["request"].pop("prompt_version")
+    elif selector == "version":
+        record["request"]["schema"] = {}
+    record["request_sha256"] = fingerprint(record["request"])
+    before = deepcopy(record)
+    with pytest.raises(ValueError):
+        replay_case(record)
+    assert record == before
+
+
+@pytest.mark.parametrize("version", ["chat-evidence-review-v6", "chat-evidence-review-v99"])
+def test_current_chat_replay_rejects_conflicting_or_unknown_saved_version(version: str) -> None:
+    record = current_chat_record()
+    record["request"]["prompt_version"] = version
+    record["request_sha256"] = fingerprint(record["request"])
+    with pytest.raises(ValueError):
+        replay_case(record)
+
+
+def analysis_record() -> dict[str, Any]:
+    draft = {
+        "summary": [{"text": "A hold blocks deletion until release."}],
+        "insights": [{"text": "A hold blocks deletion until release."}],
+    }
+    packet = prepare_review(
+        draft, {"q1": QuoteReference(UUID(int=1), "A hold blocks deletion until release.")}
+    )
+    request = {
+        "content": packet.content,
+        "schema": AnalysisReviewOutput.model_json_schema(),
+        "prompt_version": ANALYSIS_REVIEW_PROMPT_VERSION,
+    }
+    return {
+        "draft": draft,
+        "request": request,
+        "request_sha256": fingerprint(request),
+        "review": {
+            "required_qualifications": [],
+            "decisions": [
+                {
+                    "claim_id": claim.id,
+                    "supported": True,
+                    "quote_ids": ["q1"],
+                    "redundant_with": [],
+                }
+                for claim in packet.claims
+            ],
+            "scope_complete": True,
+            "insight_assessments": [
+                {
+                    "block_index": 0,
+                    "classification": "repeats_meaning",
+                    "conclusion_claim_ids": [],
+                    "premise_quote_ids": [],
+                }
+            ],
+        },
+    }
+
+
+def test_current_analysis_replay_applies_saved_insight_value_assessments() -> None:
+    record = analysis_record()
+    before = deepcopy(record)
+    result = replay_case(record)
+    assert result["insight_assessments_available"] is True
+    assert result["aspect_inventory_available"] is False
+    assert result["payload"]["insights"] == []
+    assert result["dropped_claim_ids"] == ("i1.1",)
+    assert record == before
+
+
+@pytest.mark.parametrize("current", [True, False])
+def test_analysis_replay_does_not_fabricate_unsaved_value_assessments(current: bool) -> None:
+    record = analysis_record()
+    record["review"].pop("insight_assessments")
+    if not current:
+        record["request"].update(
+            schema=ReviewOutput.model_json_schema(), prompt_version="evidence-review-v5"
+        )
+    record["request_sha256"] = fingerprint(record["request"])
+    before = deepcopy(record)
+    if current:
+        with pytest.raises(ValueError):
+            replay_case(record)
+    else:
+        result = replay_case(record)
+        assert result["insight_assessments_available"] is False
+    assert record == before
+
+
+@pytest.mark.parametrize(
+    "compact,with_gaps,with_aspects",
+    [(False, False, False), (True, False, False), (True, True, False), (True, True, True)],
+)
 def test_service_audit_rebuilds_versioned_query_wire_and_recorded_draft_status(
     compact: bool,
     with_gaps: bool,
+    with_aspects: bool,
 ) -> None:
     record = saved_record()
     question = "How does a hold affect retention?"
@@ -348,9 +494,22 @@ def test_service_audit_rebuilds_versioned_query_wire_and_recorded_draft_status(
     review = {**record["review"], "answerability": "answered", "relevant_claim_ids": ["a1.1"]}
     if with_gaps:
         review["unanswered_parts"] = []
+    if with_aspects:
+        review.pop("required_qualifications")
+        review["required_aspects"] = [
+            {
+                "aspect": "Deletion prevention while a hold remains active",
+                "quote_ids": ["q1"],
+                "conveyed_by_claim_ids": ["a1.1"],
+            }
+        ]
     metadata = {
         "claims": [{"block_index": c.block_index, "text": c.text} for c in packet.claims],
-        "prompt_version": "chat-evidence-review-v3" if with_gaps else "chat-evidence-review-v1",
+        "prompt_version": CHAT_REVIEW_PROMPT_VERSION
+        if with_aspects
+        else "chat-evidence-review-v3"
+        if with_gaps
+        else "chat-evidence-review-v1",
         "request_sha256": hashlib.sha256(packet.content.encode()).hexdigest(),
         "review": review,
         "draft_evidence_status": "partial",
@@ -374,6 +533,8 @@ def test_service_audit_rebuilds_versioned_query_wire_and_recorded_draft_status(
     result = replay_case(rebuilt, evidence)
     assert result["evidence_status"] == "answered"
     assert result["missing_parts_available"] == with_gaps
+    assert result["aspect_inventory_available"] == with_aspects
+    assert result["review_prompt_version"] == metadata["prompt_version"]
     del metadata["draft_evidence_status"]
     assert (
         _stored_audit_record(turn, {"question": question}, evidence)["draft_evidence_status"]
