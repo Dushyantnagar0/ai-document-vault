@@ -78,6 +78,8 @@ def test_provider_key_is_required_and_nonblank(key: str | None) -> None:
         ({"storage_backend": "s3"}, "storage_backend"),
         ({"vector_backend": "pinecone"}, "vector_backend"),
         ({"openai_chat_model": "unknown-model"}, "chat model metadata"),
+        ({"openai_source_answer_model": "unknown-model"}, "source-answer model metadata"),
+        ({"openai_source_answer_model": Settings.CHAT_MODEL}, "source-answer model metadata"),
         ({"openai_embedding_model": "text-embedding-3-large"}, "embedding model metadata"),
         ({"openai_embedding_dimensions": 512}, "vector\\(1536\\)"),
         ({"max_upload_bytes": 0}, "max_upload_bytes"),
@@ -166,6 +168,23 @@ def test_answer_reasoning_accepts_explicit_environment_override(
     monkeypatch.setenv("OPENAI_ANSWER_REASONING_EFFORT", "none")
     configured = Settings(_env_file=None, openai_api_key="test-placeholder")
     assert configured.chat_configuration["openai_answer_reasoning_effort"] == "none"
+
+
+def test_source_answer_model_recipe_is_isolated_and_fixed_low(
+    settings: Callable[..., Settings], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_SOURCE_ANSWER_MODEL", "gpt-6.1-sol")
+    configured = settings(
+        openai_answer_reasoning_effort="none", openai_review_reasoning_effort="none"
+    )
+    assert configured.openai_source_answer_model == Settings.SOURCE_ANSWER_MODEL == "gpt-6.1-sol"
+    assert configured.chat_configuration["openai_source_answer_model"] == "gpt-6.1-sol"
+    assert configured.chat_configuration["openai_source_answer_reasoning_effort"] == "low"
+    assert configured.openai_chat_model == Settings.CHAT_MODEL
+    assert configured.openai_answer_reasoning_effort == "none"
+    assert configured.openai_review_reasoning_effort == "none"
+    assert configured.chat_max_output_tokens == 1200
+    assert configured.chat_prompt_max_tokens == 12000
 
 
 def test_exact_model_input_and_combined_context_bounds(
