@@ -421,33 +421,89 @@ async def test_history_uses_last_four_completed_turns_and_excludes_failures(
     assert all("Visible failure" not in message["content"] for message in history)
 
 
-async def test_history_token_budget_clips_recent_assistant_without_losing_budget(
+@pytest.mark.parametrize("below_boundary", [False, True])
+async def test_history_token_budget_keeps_complete_recent_exchanges(
     store: TurnStore,
     retrieval_engine: AsyncEngine,
     new_session: Callable[[], UUID],
     claim_database: ClaimDatabase,
+    below_boundary: bool,
 ) -> None:
     identifier = new_session()
-    previous = reservation(await store.reserve(identifier, uuid4(), "Question", str(uuid4())))
-    content = "No supporting evidence. " * 100
-    await store.complete(previous, answer(content), timings={})
+    exchanges = [
+        [
+            {"role": "user", "content": f"What does policy {index} cover?"},
+            {"role": "assistant", "content": f"Policy {index} covers equipment repairs."},
+        ]
+        for index in range(3)
+    ]
+    for question, response in exchanges:
+        previous = reservation(
+            await store.reserve(identifier, uuid4(), question["content"], str(uuid4()))
+        )
+        await store.complete(previous, answer(response["content"]), timings={})
     current = reservation(await store.reserve(identifier, uuid4(), "Follow-up", str(uuid4())))
+    encoding = tiktoken.get_encoding("o200k_base")
+
+    def tokens(history: list[dict[str, str]]) -> int:
+        return len(encoding.encode(json.dumps(history, ensure_ascii=False), disallowed_special=()))
+
+    recent = exchanges[1] + exchanges[2]
+    budget = tokens(recent) - int(below_boundary)
+    expected = exchanges[2] if below_boundary else recent
+    assert tokens(exchanges[0] + recent) > budget
+    if below_boundary:
+        # Removing only the older question would leave its orphan answer in budget.
+        assert tokens([exchanges[1][1], *expected]) <= budget
     limited = TurnStore(
         retrieval_engine,
-        claim_database.settings.model_copy(update={"chat_history_max_tokens": 32}),
+        claim_database.settings.model_copy(update={"chat_history_max_tokens": budget}),
     )
     history = await limited.history(current)
-    assert len(history) == 1 and history[0]["role"] == "assistant"
-    assert 0 < len(history[0]["content"]) < len(content)
-    assert content.startswith(history[0]["content"])
-    assert (
-        len(
-            tiktoken.get_encoding("o200k_base").encode(
-                json.dumps(history, ensure_ascii=False), disallowed_special=()
-            )
-        )
-        <= 32
+    assert history == expected
+    assert tokens(history) <= budget
+
+
+@pytest.mark.parametrize("oversized_role", ["user", "assistant"])
+async def test_history_omits_oversized_latest_exchange_without_altering_saved_messages(
+    store: TurnStore,
+    retrieval_engine: AsyncEngine,
+    new_session: Callable[[], UUID],
+    claim_database: ClaimDatabase,
+    oversized_role: str,
+) -> None:
+    identifier = new_session()
+    older = reservation(await store.reserve(identifier, uuid4(), "Older question", str(uuid4())))
+    await store.complete(older, answer("Older answer."), timings={})
+    question = "Which policy applies? " * 100 if oversized_role == "user" else "Which policy?"
+    response = "No supporting evidence. " * 100 if oversized_role == "assistant" else "Policy A."
+    previous = reservation(await store.reserve(identifier, uuid4(), question, str(uuid4())))
+    await store.complete(previous, answer(response), timings={})
+    current = reservation(await store.reserve(identifier, uuid4(), "Follow-up", str(uuid4())))
+    budget = 64
+    exchange = [
+        {"role": "user", "content": question},
+        {"role": "assistant", "content": response},
+    ]
+    encoding = tiktoken.get_encoding("o200k_base")
+    assert len(encoding.encode(json.dumps(exchange, ensure_ascii=False))) > budget
+    limited = TurnStore(
+        retrieval_engine,
+        claim_database.settings.model_copy(update={"chat_history_max_tokens": budget}),
     )
+    history = await limited.history(current)
+    assert history == []
+    assert len(encoding.encode(json.dumps(history, ensure_ascii=False))) <= budget
+    with Session(claim_database.engine) as database:
+        messages = database.scalars(
+            select(ChatMessage)
+            .where(ChatMessage.turn_id == previous.turn_id)
+            .order_by(ChatMessage.sequence)
+        ).all()
+        saved_exchange = [
+            {"role": message.role, "content": message.content} for message in messages
+        ]
+        assert saved_exchange == exchange
 
 
 @pytest.mark.parametrize("question", ["", "   ", "x" * 4001])

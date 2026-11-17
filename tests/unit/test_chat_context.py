@@ -117,7 +117,7 @@ def test_compact_locators_are_actual_boundaries_while_internal_spans_are_retaine
     assert json.loads(trimmed.content)["evidence"][0]["locators"] == [{"page": 1}]
 
 
-def test_oldest_history_is_removed_before_changing_actual_evidence() -> None:
+def test_complete_prompt_budget_removes_oldest_exchange_before_changing_evidence() -> None:
     history = [
         {
             "role": "user" if index % 2 == 0 else "assistant",
@@ -130,34 +130,89 @@ def test_oldest_history_is_removed_before_changing_actual_evidence() -> None:
     baseline = prepare_context(
         "Who owns it?", history, [item], configured, intent="factual", complete_scope=True
     )
+    budget = baseline.token_count - 100
     result = prepare_context(
         "Who owns it?",
         history,
         [item],
-        configured.model_copy(update={"chat_prompt_max_tokens": baseline.token_count - 100}),
+        configured.model_copy(update={"chat_prompt_max_tokens": budget}),
         intent="factual",
         complete_scope=True,
     )
-    assert result.history == tuple(history[1:])
+    assert result.history == tuple(history[2:])
+    assert [message["role"] for message in result.history] == ["user", "assistant"] * 3
+    assert result.token_count == generation_prompt_tokens(
+        AnswerSelectionOutput, ANSWER_SYSTEM + ANSWER_REPAIR, result.content
+    )
+    assert result.token_count <= budget
     assert result.evidence == (item,) and result.complete_scope is True
     assert json.loads(result.content)["question"] == "Who owns it?"
 
 
-def test_history_json_is_bounded_and_only_latest_completed_turns_are_used() -> None:
+@pytest.mark.parametrize("history_budget", [90, 10000])
+def test_history_json_is_bounded_and_only_latest_complete_exchanges_are_used(
+    history_budget: int,
+) -> None:
     history = [
-        {"role": "user", "content": f"Turn {index} " + "detail " * 30} for index in range(20)
+        {
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": f"Turn {index} " + "detail " * 20,
+        }
+        for index in range(20)
     ]
     result = prepare_context(
         "What?",
         history,
         [],
-        settings(chat_history_max_tokens=90),
+        settings(chat_history_max_tokens=history_budget),
         intent="factual",
         complete_scope=True,
     )
-    assert tokens(list(result.history)) <= 90
-    assert result.history[-1] == history[-1]
-    assert len(result.history) <= 8 and not result.complete_scope
+    expected = history[-2:] if history_budget == 90 else history[-8:]
+    assert result.history == tuple(expected)
+    assert tokens(list(result.history)) <= history_budget
+    assert [message["role"] for message in result.history] == ["user", "assistant"] * (
+        len(expected) // 2
+    )
+    assert not result.complete_scope
+
+
+def test_complete_prompt_budget_omits_unfitting_latest_pair_with_short_answer() -> None:
+    question = "What does that mean?"
+    history = [
+        {"role": "user", "content": "Explain these details: " + "detail " * 400},
+        {"role": "assistant", "content": "The owner is Priya Shah."},
+    ]
+    item = source("Owner Priya Shah.")
+    configured = settings(chat_history_max_tokens=10000)
+    baseline = prepare_context(
+        question, [], [item], configured, intent="factual", complete_scope=True
+    )
+    # A short orphan answer would fit, but the exchange establishing its subject
+    # cannot. Budgeting must omit the whole pair and retain the source/question.
+    orphan_packet = json.loads(baseline.content)
+    orphan_packet["history"] = history[1:]
+    budget = generation_prompt_tokens(
+        AnswerSelectionOutput,
+        ANSWER_SYSTEM + ANSWER_REPAIR,
+        json.dumps(orphan_packet, ensure_ascii=False, separators=(",", ":")),
+    )
+    full = prepare_context(
+        question, history, [item], configured, intent="factual", complete_scope=True
+    )
+    assert full.token_count > budget
+    result = prepare_context(
+        question,
+        history,
+        [item],
+        configured.model_copy(update={"chat_prompt_max_tokens": budget}),
+        intent="factual",
+        complete_scope=True,
+    )
+    assert result.history == ()
+    assert result.evidence == (item,) and result.complete_scope
+    assert json.loads(result.content)["question"] == question
+    assert result.token_count <= budget
 
 
 def test_current_question_and_system_instructions_are_never_truncated() -> None:

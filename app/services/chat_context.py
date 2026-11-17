@@ -312,8 +312,10 @@ def prepare_context(
     retained_history = [
         dict(message) for message in history[-2 * settings.chat_history_max_turns :]
     ]
+    # TurnStore supplies ordered completed user/assistant pairs. Both history
+    # and full-prompt trimming must preserve each answer's original question.
     while retained_history and _tokens(_json(retained_history)) > settings.chat_history_max_tokens:
-        retained_history.pop(0)
+        del retained_history[:2]
     unique: list[Evidence] = []
     seen_ids: set[UUID] = set()
     seen_text: set[str] = set()
@@ -396,7 +398,7 @@ def prepare_context(
     synchronize()
     while not fits_both(selected, retained_history):
         if retained_history:
-            retained_history.pop(0)
+            del retained_history[:2]
             continue
         if not selected:
             raise ProcessingError(

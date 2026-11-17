@@ -351,26 +351,11 @@ class TurnStore:
                 {"role": message.role, "content": message.content or ""} for message in messages
             ]
         budget = self.settings.chat_history_max_tokens
-        while len(history) > 1 and _tokens(history) > budget:
-            history.pop(0)
-        if history and _tokens(history) > budget:
-            original = history[0]["content"]
-            history[0]["content"] = ""
-            if _tokens(history) > budget:
-                raise ConversationError(
-                    503,
-                    "CHAT_HISTORY_BUDGET_TOO_SMALL",
-                    "History token budget cannot fit a message.",
-                )
-            low, high = 0, len(original)
-            while low < high:
-                middle = (low + high + 1) // 2
-                history[0]["content"] = original[:middle]
-                if _tokens(history) <= budget:
-                    low = middle
-                else:
-                    high = middle - 1
-            history[0]["content"] = original[:low]
+        # Completed turns atomically contain ordered user/assistant pairs. Keep
+        # their questions and answers together, including when the newest pair
+        # cannot fit: empty history is safer than a response without its subject.
+        while history and _tokens(history) > budget:
+            del history[:2]
         return history
 
     async def save_context(
