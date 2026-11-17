@@ -3,6 +3,7 @@
 from uuid import uuid4
 
 import tiktoken
+from celery.exceptions import SoftTimeLimitExceeded
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app.core.config import Settings
@@ -15,7 +16,7 @@ TOKENIZER = "cl100k_base"
 def chunk_document(extraction: ExtractionResult, settings: Settings) -> tuple[Chunk, ...]:
     try:
         return _chunk_document(extraction, settings)
-    except ProcessingError:
+    except (ProcessingError, SoftTimeLimitExceeded):
         raise
     except Exception:
         raise ProcessingError(

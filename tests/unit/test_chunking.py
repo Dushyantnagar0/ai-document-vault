@@ -4,10 +4,34 @@ from typing import Any
 
 import pytest
 import tiktoken
+from celery.exceptions import SoftTimeLimitExceeded
 
 from app.core.config import Settings
 from app.domain.documents import ExtractionResult, ProcessingError, TextBlock
 from app.services.chunking import TOKENIZER, chunk_document
+
+
+def test_worker_time_limit_propagates_for_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    def interrupted(*args: Any, **kwargs: Any) -> Any:
+        raise SoftTimeLimitExceeded()
+
+    monkeypatch.setattr("app.services.chunking._chunk_document", interrupted)
+    with pytest.raises(SoftTimeLimitExceeded):
+        chunk_document(extracted("Retryable interruption."), configured())
+
+
+def test_unexpected_chunking_failure_still_has_safe_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("private document text")
+
+    monkeypatch.setattr("app.services.chunking._chunk_document", broken)
+    with pytest.raises(ProcessingError) as captured:
+        chunk_document(extracted("Document."), configured())
+    assert captured.value.code == "CHUNKING_FAILED"
+    assert not captured.value.retryable
+    assert "private document text" not in str(captured.value)
 
 
 def configured(**overrides: Any) -> Settings:
