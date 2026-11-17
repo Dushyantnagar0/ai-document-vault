@@ -56,6 +56,8 @@ curl 'http://localhost:4000/api/v1/documents?limit=20'
 
 Status progresses through `PENDING`/`PROCESSING` to `COMPLETED` or `FAILED`. Inspect the actual stage, extraction warnings and safe error details. Processing/retries are bounded; a terminal failure remains visible. Correct its cause before intentionally uploading again with a new request UUID.
 
+Processing time varies with document size, section summarization, provider latency and repairs. The stronger final analysis reviewer prioritizes source accuracy and can add latency. A transient provider failure can trigger a bounded retry of the entire ingestion pipeline, repeating AI work and increasing time and cost. Follow the existing upload's status rather than uploading again; polling does not call AI. See [slow-processing diagnosis](./docs/debugging.md#when-processing-is-slow).
+
 Once completed:
 
 ```sh
