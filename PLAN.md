@@ -20,12 +20,12 @@ M1 precedes M2, M2 precedes M3, M3 precedes M5; M4 instrumentation starts in M2/
 
 ## Current evidence and remaining exits
 
-Current work replaces factual drafting/review with source selection followed by composition, preserving the normal four-request flow, shared fifth repair and unchanged legacy/analysis routes. The original comparison and additional controls have source-reviewed supplied-evidence results; strict contextual checklist omissions remain recorded. Four current actual API cases and restart/replay checks satisfy the targeted integrated gate; documented strict-checklist and semantic limits remain.
+Factual source selection/composition is delivered. A subsequent independent review passed eight new chat cases but reopened ingestion acceptance when an ordinary PDF failed two insight-review contracts; the held-out DOCX completed. Current work constrains analysis-review requests to actual candidates and gives the existing single repair allowlisted rejection guidance. The correction passed1,425 provider-free tests and fresh PDF/DOCX completion with9/10 authorized calls; source review retains wording/novelty defects. Track those remaining semantic gates and deployment status in the current evaluation and handoff; successful ingestion is not a general quality pass.
 
 | Area | Recorded checkpoint | Remaining qualification |
 |---|---|---|
-| Backend/static | Clean code export `3cf1bb6`: 1,406 provider-free tests, static/startup/schema checks passed | Current hosted status belongs to PR2; historical CI remains scoped to its commit |
-| Live AI | Frozen controls and four actual API/source checks completed | Strict contextual omissions and internal per-component citation qualifications remain explicit |
+| Backend/static | Reviewv9 working tree:1,425 tests/static/startup/schema checks; historical `3cf1bb6` export:1,406 tests | Correction packaged as `1d51569` and deployed; hosted CI remains scoped to its commit |
+| Live AI | Delivered v17 controls/four API cases, independent eight-chat review, and fresh reviewv9 PDF/DOCX ingestion | Analysis wording/novelty and per-component citation qualifications remain; no overall semantic pass |
 | Persistence/recovery | Integrated suite plus current isolated API/worker restart and exact zero-call replay | Ordinary restart evidence is not a new hard-kill drill |
 | UI/demo | Existing UI is unchanged; AppTest is part of the provider-free suite | Human walkthrough/recording delivery remains distinct from tests |
 | Setup/performance | Isolated local builds/startup and earlier clean-export evidence | No uncached-download, broad-platform or thousand-document benchmark claim |

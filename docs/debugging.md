@@ -48,6 +48,8 @@ A recorded `quote_not_in_original` on a pre-v5 attempt identifies a failed quote
 
 The CLI returns exit 0 with a report, or exit 1 with a safe JSON error such as `INVALID_DOCUMENT_ID`, `INVALID_FILENAME`, `INVALID_LIMIT`, `DOCUMENT_NOT_FOUND`, `CONFIGURATION_INVALID` or `DATABASE_UNAVAILABLE`. Invalid selectors are rejected before connecting. Database failures do not print DSNs, SQL parameters or exception text. See `docker compose exec api python -m scripts.diagnose --help` for arguments.
 
+For analysis review, `insight_assessment_identity_mismatch` means the returned assessments do not match actual candidates; `unbound_insight_premises` means an assessment selected premises outside its conclusion claims' factual support. Reviewv9 constrains new requests to an actual-candidate manifest and supplies fixed rejection-specific guidance for the existing single repair. It does not silently add/drop references, increase retries or publish unchecked prose. Inspect saved review versions: a deployment does not repair an older failed upload, and a new upload identity can incur charges.
+
 ## Correlate only the necessary logs
 
 ### When the document completed but chat failed
