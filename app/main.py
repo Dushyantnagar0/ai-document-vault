@@ -62,6 +62,11 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         PgVectorRetriever(engine),
         AsyncOpenAIGenerationProvider(settings, reasoning_effort="none"),
         AsyncOpenAIEmbeddingProvider(settings),
+        source_answerer=AsyncOpenAIGenerationProvider(
+            settings,
+            model=settings.openai_source_answer_model,
+            reasoning_effort=settings.SOURCE_ANSWER_REASONING_EFFORT,
+        ),
         answerer=AsyncOpenAIGenerationProvider(
             settings, reasoning_effort=settings.openai_answer_reasoning_effort
         ),

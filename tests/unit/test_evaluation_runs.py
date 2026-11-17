@@ -93,6 +93,22 @@ def test_answer_effort_change_invalidates_run_recipe_without_altering_saved_evid
     cast(Mock, original.engine).assert_not_called()
 
 
+def test_factual_evidence_requires_its_actual_source_model_and_stage_versions() -> None:
+    settings = Settings(_env_file=None, openai_api_key="test-placeholder")
+    expected = evaluate_ai.expected_versions(settings)
+    factual = {
+        "versions": evaluate_ai.expected_versions(settings, intent="factual"),
+        "evidence": {"planner_intent": "factual"},
+    }
+    assert evaluate_ai.stale_reasons(factual, expected) == []
+    factual["versions"]["chat_model"] = settings.openai_chat_model
+    assert "chat_model_changed" in evaluate_ai.stale_reasons(factual, expected)
+    factual["versions"] = expected
+    assert "source_composition_missing" in evaluate_ai.stale_reasons(factual, expected)
+    overview = {"versions": expected, "evidence": {"planner_intent": "overview"}}
+    assert evaluate_ai.stale_reasons(overview, expected) == []
+
+
 def test_namespaced_run_refuses_revision_mix(tmp_path: Path) -> None:
     with pytest.raises(EvaluationFailure):
         make_runner(tmp_path, "frozen", revision=2)

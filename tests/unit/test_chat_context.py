@@ -14,6 +14,7 @@ from app.domain.documents import ProcessingError, SourceSpan
 from app.prompts.analysis import generation_prompt_tokens
 from app.prompts.chat import ANSWER_REPAIR, ANSWER_SYSTEM
 from app.services.chat_context import AnswerSelectionOutput, prepare_context
+from app.services.source_answer import composition_input_reservation, prepare_selection_packet
 
 pytestmark = pytest.mark.unit
 DOCUMENT, PROFILE = UUID(int=1), UUID(int=2)
@@ -48,6 +49,55 @@ def block(item: Evidence, quote: str, text: str = "Supported fact.") -> dict[str
 def tokens(value: Any) -> int:
     encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     return len(tiktoken.get_encoding("o200k_base").encode(encoded, disallowed_special=()))
+
+
+def test_source_answer_context_uses_actual_stage_budgets_and_no_factual_history() -> None:
+    from app.services.chat_context import answer_quote_catalog
+
+    configured = settings()
+    question, query = "What about its owner?", "Who owns the agreement?"
+    candidate = source("Owner: Mira Stone.")
+    prepared = prepare_context(
+        question,
+        [
+            {"role": "user", "content": "Earlier question"},
+            {"role": "assistant", "content": "Wrong owner"},
+        ],
+        [candidate],
+        configured,
+        intent="factual",
+        complete_scope=True,
+        source_answer_query=query,
+    )
+    payload = json.loads(prepared.content)
+    assert payload["question"] == question and payload["retrieval_query"] == query
+    assert payload["history"] == [] and prepared.history == ()
+    assert "Wrong owner" not in prepared.content
+    catalog = answer_quote_catalog(prepared.evidence)
+    packet = prepare_selection_packet(question, query, catalog, configured)
+    assert prepared.token_count == max(
+        packet.reserved_input_tokens,
+        composition_input_reservation(question, query, catalog, configured),
+    )
+    assert prepared.token_count <= configured.chat_prompt_max_tokens
+    assert (
+        json.loads(packet.content)["evidence"][0]["quote_id"]
+        == payload["evidence"][0]["passages"][0]["quote_id"]
+    )
+
+
+def test_source_answer_budget_cannot_be_enabled_for_legacy_routes() -> None:
+    for intent in ("overview", "exhaustive"):
+        with pytest.raises(ProcessingError):
+            prepare_context(
+                "Question",
+                [],
+                [source("Fact.")],
+                settings(),
+                intent=intent,
+                complete_scope=True,
+                source_answer_query="Question",
+            )
 
 
 def test_highest_ordered_candidates_dedup_and_factual_top_k_preserves_scope() -> None:

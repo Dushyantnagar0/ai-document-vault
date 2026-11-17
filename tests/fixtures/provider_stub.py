@@ -23,6 +23,8 @@ REASONING_SCHEMAS = frozenset(
         "PlannerOutput",
         "AnswerOutput",
         "AnswerSelectionOutput",
+        "SourceSelectionOutput",
+        "CompositionOutput",
         "ExhaustiveSelectionOutput",
         "SelectionOutput",
         "InsightCandidates",
@@ -264,6 +266,77 @@ def _answer_selection(content: dict[str, Any]) -> dict[str, Any]:
             text = block["text"]
         blocks.append({"text": text, "quote_ids": [selected["quote_id"]]})
     return {"evidence_status": legacy["evidence_status"], "blocks": blocks}
+
+
+# Deliberately limited fixture vocabulary: these literal rules exercise stage
+# wiring, requested gaps and references, not general retrieval or semantic quality.
+SOURCE_COMPONENTS = (
+    ("Owner", r"\b(owner|owns|owned|who)\b", r"Owner:\s*[^\n.]+"),
+    (
+        "Renewal date",
+        r"renew|\bwhen\b",
+        r"(?:Renewal date:\s*|renews on\s+)\d{1,2}\s+[A-Za-z]+\s+\d{4}",
+    ),
+    (
+        "Annual fee",
+        r"fee|cost|price",
+        r"(?:Annual fee:\s*|annual fee is\s+)\d+(?:\.\d+)?\s+(?:USD|dollars)",
+    ),
+    ("Cancellation terms", r"cancel|penalt|termination", None),
+)
+
+
+def _source_selection(content: dict[str, Any]) -> dict[str, Any]:
+    """Select only the fixture's recognized requested source literals."""
+    components = []
+    for label, requested, literal in SOURCE_COMPONENTS:
+        if not re.search(requested, content["question"], re.IGNORECASE):
+            continue
+        selected = next(
+            (
+                item["quote_id"]
+                for item in content.get("evidence", [])
+                if literal is not None and re.search(literal, item["text"], re.IGNORECASE)
+            ),
+            None,
+        )
+        components.append({"label": label, "quote_ids": [selected] if selected else []})
+    supported = sum(bool(item["quote_ids"]) for item in components)
+    status = (
+        "insufficient"
+        if not supported
+        else "partial"
+        if supported < len(components)
+        else "answered"
+    )
+    return {"evidence_status": status, "components": components}
+
+
+def _source_composition(content: dict[str, Any]) -> dict[str, Any]:
+    """Copy the requested fixture literal from each frozen component selection."""
+    evidence = {item["quote_id"]: item["text"] for item in content.get("evidence", [])}
+    patterns = {label: literal for label, _, literal in SOURCE_COMPONENTS}
+    parts = []
+    for component in content["components"]:
+        literal = patterns.get(component["label"])
+        selected = next(
+            (
+                (quote_id, match.group().strip())
+                for quote_id in component["quote_ids"]
+                if literal is not None
+                and (match := re.search(literal, evidence.get(quote_id, ""), re.IGNORECASE))
+            ),
+            None,
+        )
+        parts.append(
+            {
+                "component_id": component["component_id"],
+                "status": "supported" if selected else "unsupported",
+                "quote_ids": [selected[0]] if selected else [],
+                "text": selected[1] if selected else "",
+            }
+        )
+    return {"parts": parts}
 
 
 def _review(content: dict[str, Any]) -> dict[str, Any]:
@@ -509,6 +582,7 @@ class Handler(BaseHTTPRequestHandler):
                     "AnswerOutput",
                     "AnswerSelectionOutput",
                     "ExhaustiveSelectionOutput",
+                    "SourceSelectionOutput",
                 }:
                     ANSWER_QUESTIONS[_fingerprint(content["question"])] += 1
             if schema == "PlannerOutput":
@@ -533,6 +607,11 @@ class Handler(BaseHTTPRequestHandler):
             elif schema == "AnswerSelectionOutput":
                 BARRIERS.wait("answer", content)
                 result = _answer_selection(content)
+            elif schema == "SourceSelectionOutput":
+                BARRIERS.wait("answer", content)
+                result = _source_selection(content)
+            elif schema == "CompositionOutput":
+                result = _source_composition(content)
             elif schema == "ExhaustiveSelectionOutput":
                 BARRIERS.wait("answer", content)
                 result = {

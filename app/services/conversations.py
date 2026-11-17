@@ -27,6 +27,7 @@ from app.prompts.chat import ANSWER_PROMPT_VERSION, CHAT_PIPELINE_VERSION, PLANN
 from app.services.analysis_evidence import QUOTE_CATALOG_VERSION
 from app.services.chat_review import CHAT_REVIEW_PROMPT_VERSION
 from app.services.evidence_review import PROJECTION_VERSION
+from app.services.source_answer import SOURCE_COMPOSITION_VERSION, SOURCE_SELECTION_VERSION
 
 
 def utcnow() -> datetime:
@@ -372,8 +373,13 @@ class TurnStore:
         timings = _json_copy(timings)
         # Provider input and persisted audit are different bounded records. The
         # audit is never fed back as conversation history or retrieval evidence.
-        prompt_context = {key: value for key, value in context.items() if key != "evidence_review"}
+        prompt_context = {
+            key: value
+            for key, value in context.items()
+            if key not in {"evidence_review", "source_answer"}
+        }
         review = context.get("evidence_review")
+        source_answer = context.get("source_answer")
         review_budget = (
             self.settings.retrieval_max_tokens
             + self.settings.chat_max_output_tokens
@@ -391,6 +397,11 @@ class TurnStore:
                 review is not None
                 and (not isinstance(review, dict) or _tokens(review) > review_budget)
             )
+            or (
+                source_answer is not None
+                and (not isinstance(source_answer, dict) or _tokens(source_answer) > review_budget)
+            )
+            or (source_answer is not None and review is not None)
         ):
             raise ConversationError(
                 422, "INVALID_CHAT_CONTEXT", "Conversation context exceeds its bounded contract."
@@ -406,6 +417,19 @@ class TurnStore:
                 evidence_scope,
             )
             turn.context_snapshot = {**context, "request_id": reservation.request_id}
+            if context.get("answer_mode") == "source_selected":
+                versions = dict(turn.versions)
+                versions.update(
+                    answer_prompt=SOURCE_COMPOSITION_VERSION,
+                    source_selection=SOURCE_SELECTION_VERSION,
+                    source_composition=SOURCE_COMPOSITION_VERSION,
+                    source_answer_model=self.settings.openai_source_answer_model,
+                    chat_model=self.settings.openai_source_answer_model,
+                    planner_model=self.settings.openai_chat_model,
+                )
+                versions.pop("evidence_review", None)
+                versions.pop("evidence_projection", None)
+                turn.versions = versions
             turn.timings = {**turn.timings, **timings}
 
     @staticmethod

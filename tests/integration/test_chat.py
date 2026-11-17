@@ -25,9 +25,10 @@ from app.domain.conversation import Replay, TurnReservation
 from app.domain.documents import Generated
 from app.prompts.chat import CHAT_PIPELINE_VERSION
 from app.services.chat import ChatProcessor
-from app.services.chat_review import CHAT_REVIEW_PROMPT_VERSION, ChatReviewOutput
+from app.services.chat_review import ChatReviewOutput
 from app.services.conversations import TurnStore
 from app.services.grounding import INSUFFICIENT_ANSWER
+from app.services.source_answer import SOURCE_COMPOSITION_VERSION, SOURCE_SELECTION_VERSION
 
 pytestmark = [
     pytest.mark.integration,
@@ -235,13 +236,13 @@ def test_grounded_followup_history_replay_and_persisted_vectors_reused(
     assert _count(after_calls, "embeddings") - _count(before, "embeddings") == 2
     assert _count(after_calls, "PlannerOutput") - _count(before, "PlannerOutput") == 2
     assert (
-        _count(after_calls, "AnswerSelectionOutput") - _count(before, "AnswerSelectionOutput") == 2
+        _count(after_calls, "SourceSelectionOutput") - _count(before, "SourceSelectionOutput") == 2
     )
-    assert _count(after_calls, "ChatReviewOutput") - _count(before, "ChatReviewOutput") == 2
+    assert _count(after_calls, "CompositionOutput") - _count(before, "CompositionOutput") == 2
     for schema, effort in (
         ("PlannerOutput", "none"),
-        ("AnswerSelectionOutput", "low"),
-        ("ChatReviewOutput", "low"),
+        ("SourceSelectionOutput", "low"),
+        ("CompositionOutput", "low"),
     ):
         assert (
             _reasoning_count(after_calls, schema, effort) - _reasoning_count(before, schema, effort)
@@ -257,22 +258,26 @@ def test_grounded_followup_history_replay_and_persisted_vectors_reused(
     for turn in turns:
         assert turn["versions"]["pipeline"] == CHAT_PIPELINE_VERSION
         assert turn["versions"]["configuration"]["openai_answer_reasoning_effort"] == "low"
-        review = turn["context"]["evidence_review"]
-        assert review["prompt_version"] == CHAT_REVIEW_PROMPT_VERSION
-        assert review["scope_complete"] and not review["force_qualification_quotes"]
-        assert review["qualification_policy"] == "required_aspect_source_bindings"
-        assert review["review"]["decisions"] and review["quote_bindings"]
-        assert review["claims"] and len(review["request_sha256"]) == 64
+        audit = turn["context"]["source_answer"]
+        assert audit["selection_version"] == SOURCE_SELECTION_VERSION
+        assert audit["composition_version"] == SOURCE_COMPOSITION_VERSION
+        assert audit["projection"]["evidence_status"] == "answered"
+        assert audit["selection"]["result"]["components"] and audit["quote_bindings"]
+        assert len(audit["composition"]["request_sha256"]) == 64
+        assert "evidence_review" not in turn["context"]
+        assert "evidence_review" not in turn["versions"]
+        assert turn["versions"]["answer_prompt"] == SOURCE_COMPOSITION_VERSION
+        assert turn["versions"]["source_answer_model"] == "gpt-6.1-sol"
         with Session(database) as session:
             samples = session.scalars(
                 select(PerformanceSample).where(
                     PerformanceSample.turn_id == UUID(turn["id"]),
-                    PerformanceSample.operation == "chat.evidence_review",
+                    PerformanceSample.operation == "chat.source_composition",
                 )
             ).all()
             assert len(samples) == 1 and samples[0].outcome == "succeeded"
             assert samples[0].input_tokens == 100 and samples[0].output_tokens == 60
-    assert len(turns[1]["context"]["payload"]["history"]) == 2
+    assert turns[1]["context"]["payload"]["history"] == []
     assert question in turns[1]["query"]
     messages = _history(api, session_id)["items"]
     assert [message["sequence"] for message in messages] == [1, 2, 3, 4]
@@ -285,7 +290,7 @@ def test_answer_reasoning_none_override_is_persisted_and_replayed(
 ) -> None:
     """A dedicated injected provider uses the override; HTTP replay spends nothing."""
     session_id = _session(api, documents["juniper"])
-    question, request_id = "Who owns this agreement?", str(uuid4())
+    question, request_id = "Give an overview of this document.", str(uuid4())
     before = _stats()
 
     async def execute() -> Replay:
@@ -305,6 +310,9 @@ def test_answer_reasoning_none_override_is_persisted_and_replayed(
                 ),
                 reviewer=AsyncOpenAIGenerationProvider(
                     settings, reasoning_effort=settings.openai_review_reasoning_effort
+                ),
+                source_answerer=AsyncOpenAIGenerationProvider(
+                    settings, model=settings.openai_source_answer_model, reasoning_effort="low"
                 ),
             )
             reserved = await store.reserve(
@@ -330,12 +338,126 @@ def test_answer_reasoning_none_override_is_persisted_and_replayed(
         before, "AnswerSelectionOutput", "low"
     )
     turn = _turns(database, session_id)[0]
-    assert turn["calls"] == 4
+    assert turn["calls"] == 3
     assert turn["versions"]["configuration"]["openai_answer_reasoning_effort"] == "none"
     assert turn["versions"]["configuration"]["openai_review_reasoning_effort"] == "low"
     assert turn["versions"]["configuration"]["chat_max_output_tokens"] == 1200
     assert _ask(api, session_id, question, request_id).json() == result.body
     assert _stats() == after
+
+
+def test_source_answer_partial_names_missing_information_and_uses_dedicated_model(
+    api: httpx.Client, database: Engine, documents: dict[str, str]
+) -> None:
+    session_id = _session(api, documents["juniper"])
+    response = _ask(api, session_id, "Who owns the agreement and what is the cancellation penalty?")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["evidence_status"] == "partial" and "Priya Shah" in body["answer"]
+    assert "Not established by the supplied evidence:" in body["answer"]
+    assert "cancellation" in body["answer"].lower()
+    assert body["model"] == "gpt-6.1-sol"
+    assert body["prompt_version"] == SOURCE_COMPOSITION_VERSION
+    turn = _turns(database, session_id)[0]
+    assert turn["calls"] == 4
+    assert turn["context"]["source_answer"]["projection"]["evidence_status"] == "partial"
+    _citations(database, body, documents["juniper"])
+
+
+@pytest.mark.parametrize("stage", ["selection", "composition"])
+@pytest.mark.parametrize("recover", [False, True])
+def test_source_stage_repair_failure_metadata_and_exact_http_replay(
+    api: httpx.Client, database: Engine, documents: dict[str, str], stage: str, recover: bool
+) -> None:
+    session_id = _session(api, documents["juniper"])
+    question, request_id = "Who owns this agreement?", str(uuid4())
+    requests: list[dict[str, Any]] = []
+
+    class InvalidSourceProvider:
+        async def generate(self, **kwargs: Any) -> Generated[Any]:
+            target = "SourceSelectionOutput" if stage == "selection" else "CompositionOutput"
+            settings = get_settings()
+            if kwargs["schema"].__name__ != target:
+                return await AsyncOpenAIGenerationProvider(
+                    settings, model=settings.openai_source_answer_model, reasoning_effort="low"
+                ).generate(**kwargs)
+            requests.append(kwargs)
+            if recover and len(requests) == 2:
+                return await AsyncOpenAIGenerationProvider(
+                    settings, model=settings.openai_source_answer_model, reasoning_effort="low"
+                ).generate(**kwargs)
+            packet = json.loads(kwargs["content"])
+            value = (
+                {
+                    "evidence_status": "answered",
+                    "components": [{"label": "Owner", "quote_ids": ["q999999"]}],
+                }
+                if stage == "selection"
+                else {
+                    "parts": [
+                        {
+                            "component_id": item["component_id"],
+                            "status": "supported",
+                            "quote_ids": ["q999999"],
+                            "text": "A deliberately invalid reference.",
+                        }
+                        for item in packet["components"]
+                    ]
+                }
+            )
+            return Generated(
+                kwargs["schema"].model_validate(value), "fixture-invalid-source", 100, 60
+            )
+
+    async def execute() -> Replay:
+        settings = get_settings()
+        engine = api_engine(settings)
+        try:
+            store = TurnStore(engine, settings)
+            processor = ChatProcessor(
+                engine,
+                settings,
+                store,
+                PgVectorRetriever(engine),
+                AsyncOpenAIGenerationProvider(settings),
+                AsyncOpenAIEmbeddingProvider(settings),
+                reviewer=AsyncOpenAIGenerationProvider(settings, reasoning_effort="low"),
+                source_answerer=InvalidSourceProvider(),
+            )
+            reserved = await store.reserve(
+                UUID(session_id), UUID(request_id), question, str(uuid4())
+            )
+            assert isinstance(reserved, TurnReservation)
+            return await processor.run(reserved)
+        finally:
+            await engine.dispose()
+
+    result = asyncio.run(execute())
+    assert len(requests) == 2
+    assert requests[0]["content"] == requests[1]["content"]
+    assert requests[1]["system"].startswith(requests[0]["system"])
+    assert "q999999" not in requests[1]["content"]
+    turns = _turns(database, session_id)
+    assert len(turns) == 1
+    assert turns[0]["calls"] == (4 if stage == "selection" and not recover else 5)
+    audit = turns[0]["context"]["source_answer"]
+    assert audit[stage]["attempt"] == 2
+    assert audit[stage]["repair"]["first_error_code"] == "SOURCE_ANSWER_INVALID"
+    assert len(audit[stage]["repair"]["first_output_sha256"]) == 64
+    if recover:
+        assert result.status == 200 and "Priya Shah" in result.body["answer"]
+        assert audit[stage]["status"] == "completed"
+        assert audit["projection"]["status"] == "completed"
+    else:
+        assert result.status == 502 and result.body["error"]["code"] == "SOURCE_ANSWER_INVALID"
+        assert audit[stage]["status"] == "failed"
+    if stage == "composition":
+        assert audit["selection"]["status"] == "completed" and audit["quote_bindings"]
+    assert "source_answer" not in turns[0]["context"]["payload"]
+    before = _stats()
+    replay = _ask(api, session_id, question, request_id)
+    assert replay.status_code == result.status and replay.json() == result.body
+    assert _stats() == before and _turns(database, session_id) == turns
 
 
 def test_session_filter_pagination_and_wrong_document_isolation(
@@ -449,7 +571,7 @@ def test_invalid_review_retains_bounded_audit_and_replay_spends_no_calls(
     repairs it or repeats the defect. This does not establish live AI quality.
     """
     session_id = _session(api, documents["juniper"])
-    question, request_id = "Who owns this agreement?", str(uuid4())
+    question, request_id = "List all facts in this document.", str(uuid4())
     review_requests: list[dict[str, Any]] = []
 
     class InvalidQualificationReviewer:
@@ -508,6 +630,9 @@ def test_invalid_review_retains_bounded_audit_and_replay_spends_no_calls(
                 AsyncOpenAIGenerationProvider(settings),
                 AsyncOpenAIEmbeddingProvider(settings),
                 reviewer=InvalidQualificationReviewer(),
+                source_answerer=AsyncOpenAIGenerationProvider(
+                    settings, model=settings.openai_source_answer_model, reasoning_effort="low"
+                ),
             )
             reservation = await store.reserve(
                 UUID(session_id), UUID(request_id), question, str(uuid4())
@@ -582,6 +707,15 @@ def test_irrelevant_but_source_valid_draft_abstains_and_replays_without_calls(
 
     class UnrelatedDraftGenerator:
         async def generate(self, **kwargs: Any) -> Generated[Any]:
+            if kwargs["schema"].__name__ == "PlannerOutput":
+                # Exercise the retained complete-exhaustive legacy synthesis
+                # path with an injected relevance failure, not the new route.
+                return Generated(
+                    kwargs["schema"].model_validate({"query": question, "intent": "exhaustive"}),
+                    "deterministic-legacy-planner",
+                    100,
+                    60,
+                )
             if kwargs["schema"].__name__ != "AnswerSelectionOutput":
                 return await AsyncOpenAIGenerationProvider(get_settings()).generate(**kwargs)
             packet = json.loads(kwargs["content"])
@@ -658,6 +792,9 @@ def test_irrelevant_but_source_valid_draft_abstains_and_replays_without_calls(
                 UnrelatedDraftGenerator(),
                 AsyncOpenAIEmbeddingProvider(settings),
                 reviewer=UnanswerableReviewer(),
+                source_answerer=AsyncOpenAIGenerationProvider(
+                    settings, model=settings.openai_source_answer_model, reasoning_effort="low"
+                ),
             )
             reservation = await store.reserve(
                 UUID(session_id), UUID(request_id), question, str(uuid4())
@@ -753,7 +890,7 @@ def test_client_read_timeout_recovers_history_and_replay_without_extra_provider_
     assert _question_count(after_completion, question) - _question_count(before, question) == 1
     assert _count(after_completion, "embeddings") - _count(before, "embeddings") == 1
     assert (
-        _count(after_completion, "AnswerSelectionOutput") - _count(before, "AnswerSelectionOutput")
+        _count(after_completion, "SourceSelectionOutput") - _count(before, "SourceSelectionOutput")
         == 1
     )
 

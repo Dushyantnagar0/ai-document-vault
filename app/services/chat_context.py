@@ -22,6 +22,7 @@ from app.services.analysis_evidence import (
     iter_literal_passages,
 )
 from app.services.grounding import AnswerOutput, EvidenceStatus, _quote_windows
+from app.services.source_answer import composition_input_reservation, prepare_selection_packet
 
 
 class AnswerSelectionOutput(BaseModel):
@@ -296,10 +297,12 @@ def prepare_context(
     complete_scope: bool,
     saved_analysis: dict[str, Any] | None = None,
     review_fits: Callable[[Sequence[Evidence]], bool] | None = None,
+    source_answer_query: str | None = None,
 ) -> PreparedContext:
     """Keep question/instructions intact and reserve an unchanged-evidence repair."""
     if (
         intent not in {"factual", "overview", "exhaustive"}
+        or (source_answer_query is not None and intent != "factual")
         or len(question) > settings.question_max_chars
         or _tokens(question) > settings.question_max_tokens
         or len({source.document_id for source in candidates}) > 1
@@ -312,6 +315,10 @@ def prepare_context(
     retained_history = [
         dict(message) for message in history[-2 * settings.chat_history_max_turns :]
     ]
+    if source_answer_query is not None:
+        # The planner already resolved references. Prior assistant prose is not
+        # evidence for either source selection or composition.
+        retained_history = []
     # TurnStore supplies ordered completed user/assistant pairs. Both history
     # and full-prompt trimming must preserve each answer's original question.
     while retained_history and _tokens(_json(retained_history)) > settings.chat_history_max_tokens:
@@ -378,6 +385,8 @@ def prepare_context(
             "evidence_scope": "document_summary" if intent == "overview" else "retrieved_excerpts",
             "evidence": _evidence_json(sources),
         }
+        if source_answer_query is not None:
+            payload["retrieval_query"] = source_answer_query
         if intent == "overview" and any(claims.values()):
             payload["saved_analysis"] = {
                 key: [block.model_dump(mode="json") for block in values]
@@ -386,14 +395,28 @@ def prepare_context(
         return _json(payload)
 
     def prompt_size(sources: Sequence[Evidence], messages: Sequence[dict[str, str]]) -> int:
+        if source_answer_query is not None:
+            catalog = answer_quote_catalog(sources)
+            packet = prepare_selection_packet(question, source_answer_query, catalog, settings)
+            return max(
+                packet.reserved_input_tokens,
+                composition_input_reservation(question, source_answer_query, catalog, settings),
+            )
         return generation_prompt_tokens(
             AnswerSelectionOutput, ANSWER_SYSTEM + ANSWER_REPAIR, render(sources, messages)
         )
 
     def fits_both(sources: Sequence[Evidence], messages: Sequence[dict[str, str]]) -> bool:
-        return prompt_size(sources, messages) <= settings.chat_prompt_max_tokens and (
-            review_fits is None or review_fits(sources)
-        )
+        try:
+            return (
+                prompt_size(sources, messages) <= settings.chat_prompt_max_tokens
+                and _tokens(render(sources, messages)) <= settings.chat_prompt_max_tokens
+                and (review_fits is None or review_fits(sources))
+            )
+        except ProcessingError as error:
+            if source_answer_query is None or error.code != "SOURCE_ANSWER_INPUT_LIMIT":
+                raise
+            return False
 
     synchronize()
     while not fits_both(selected, retained_history):
@@ -433,7 +456,5 @@ def prepare_context(
         history=tuple(retained_history),
         complete_scope=scope,
         evidence_scope="document_summary" if intent == "overview" else "retrieved_excerpts",
-        token_count=generation_prompt_tokens(
-            AnswerSelectionOutput, ANSWER_SYSTEM + ANSWER_REPAIR, content
-        ),
+        token_count=prompt_size(selected, retained_history),
     )

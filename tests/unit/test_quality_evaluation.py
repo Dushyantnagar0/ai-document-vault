@@ -144,7 +144,7 @@ def test_actual_base_evaluation_persists_quality_id_then_replays_without_new_tur
         evaluation,
         "snapshot",
         lambda *args: {
-            "versions": expected_versions(configured(tmp_path)),
+            "versions": expected_versions(configured(tmp_path), intent="factual"),
             "planner_intent": "factual",
             "membership_valid": True,
             "selected_membership_valid": True,
@@ -219,7 +219,7 @@ def completed_state(tmp_path: Path) -> dict[str, Any]:
             "status": "COMPLETED",
             "revision": 1,
             "client_request_id": str(quality_request_id(case.id)),
-            "versions": expected_versions(configured(tmp_path)),
+            "versions": expected_versions(configured(tmp_path), intent=EXPECTED_INTENTS[case.id]),
             "response": {
                 "answer": answers[case.id],
                 "evidence_status": "answered",

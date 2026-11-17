@@ -613,17 +613,21 @@ async def test_profile_mismatch_rejected_before_reserving(
         assert session is not None and session.active_turn_id is None
 
 
+@pytest.mark.parametrize("audit_key", ["evidence_review", "source_answer"])
 async def test_prompt_and_review_have_independent_persisted_budgets_and_audit_is_not_history(
     store: TurnStore,
     new_session: Callable[[], UUID],
     claim_database: ClaimDatabase,
+    audit_key: str,
 ) -> None:
     current = reservation(
         await store.reserve(new_session(), uuid4(), "Question", "review-context-request")
     )
     prompt_context = {"sources": [{"text": "source " * 11_000}]}
     review = {"claim_records": "audit_only_marker " * 1_000}
-    context = {**prompt_context, "evidence_review": review}
+    context = {**prompt_context, audit_key: review}
+    if audit_key == "source_answer":
+        context["answer_mode"] = "source_selected"
     encoding = tiktoken.get_encoding("o200k_base")
 
     def tokens(value: object) -> int:
@@ -651,7 +655,11 @@ async def test_prompt_and_review_have_independent_persisted_budgets_and_audit_is
         turn = database.get(ChatTurn, current.turn_id)
         assert turn is not None
         assert turn.context_snapshot["sources"] == prompt_context["sources"]
-        assert turn.context_snapshot["evidence_review"] == review
+        assert turn.context_snapshot[audit_key] == review
+        if audit_key == "source_answer":
+            assert turn.versions["answer_prompt"] == "source-composition-v1"
+            assert turn.versions["source_answer_model"] == settings.openai_source_answer_model
+            assert "evidence_review" not in turn.versions
     await store.complete(current, answer("A saved answer."), timings={})
     following = reservation(
         await store.reserve(current.session_id, uuid4(), "Follow up?", str(uuid4()))
@@ -664,7 +672,9 @@ async def test_prompt_and_review_have_independent_persisted_budgets_and_audit_is
     assert "audit_only_marker" not in json.dumps(history)
 
 
-@pytest.mark.parametrize("invalid_part", ["prompt", "audit", "audit_type"])
+@pytest.mark.parametrize(
+    "invalid_part", ["prompt", "audit", "audit_type", "source", "source_type", "both"]
+)
 async def test_oversized_context_does_not_overwrite_persisted_inputs(
     store: TurnStore,
     new_session: Callable[[], UUID],
@@ -679,6 +689,12 @@ async def test_oversized_context_does_not_overwrite_persisted_inputs(
         if invalid_part == "prompt"
         else {"evidence_review": {"records": "word " * 13_000}}
         if invalid_part == "audit"
+        else {"source_answer": {"records": "word " * 13_000}}
+        if invalid_part == "source"
+        else {"source_answer": ["wrong shape"]}
+        if invalid_part == "source_type"
+        else {"source_answer": {}, "evidence_review": {}}
+        if invalid_part == "both"
         else {"evidence_review": ["wrong shape"]}
     )
     with pytest.raises(ConversationError) as error:

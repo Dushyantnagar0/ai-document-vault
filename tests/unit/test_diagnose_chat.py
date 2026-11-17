@@ -75,6 +75,23 @@ def test_no_turns_is_an_explicit_empty_read_only_report() -> None:
     assert report["turns"] == [] and report["total_matches"] == 0 and not report["truncated"]
 
 
+def test_source_stage_versions_are_visible_without_loading_saved_source_data() -> None:
+    database = connection()
+    row = database.execute.return_value.mappings.return_value.all.return_value[0]
+    row["versions"].update(
+        answer_prompt="source-composition-v1",
+        source_selection="source-selection-v1",
+        source_composition="source-composition-v1",
+        source_answer=PRIVATE,
+    )
+    report = diagnostic.diagnose_chat(database, document_id=UUID(int=3))
+    versions = report["turns"][0]["versions"]
+    assert versions["answer_prompt"] == "source-composition-v1"
+    assert versions["source_selection"] == "source-selection-v1"
+    assert versions["source_composition"] == "source-composition-v1"
+    assert PRIVATE not in json.dumps(report)
+
+
 @pytest.mark.parametrize(
     "arguments,code",
     [

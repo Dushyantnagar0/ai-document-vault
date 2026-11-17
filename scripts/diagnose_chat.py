@@ -69,9 +69,21 @@ def diagnose_chat(connection: Connection, *, document_id: UUID, limit: int = 20)
                 "versions": {
                     key: value
                     for key, value in versions.items()
-                    if key in {"answer_prompt", "planner_prompt", "answer", "planner", "pipeline"}
+                    if key
+                    in {
+                        "answer_prompt",
+                        "planner_prompt",
+                        "answer",
+                        "planner",
+                        "pipeline",
+                        "source_selection",
+                        "source_composition",
+                    }
                     and isinstance(value, str)
-                    and re.fullmatch(r"(?:answer|planner|grounded-chat)-v[0-9]{1,4}", value)
+                    and re.fullmatch(
+                        r"(?:answer|planner|grounded-chat|source-selection|source-composition)-v[0-9]{1,4}",
+                        value,
+                    )
                 },
                 "error": _error(row["error"]),
                 "created_at": _time(row["created_at"]),

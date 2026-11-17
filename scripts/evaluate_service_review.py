@@ -238,6 +238,14 @@ async def run(settings: Settings, run_id: str, document_id: UUID, suite: str) ->
                     "service.answer",
                     profile=settings.openai_answer_reasoning_effort,
                 ),
+                source_answerer=AsyncBudgetedGenerationProvider(
+                    AsyncOpenAIGenerationProvider(
+                        settings, model=settings.openai_source_answer_model, reasoning_effort="low"
+                    ),
+                    budget,
+                    "service.source_answer",
+                    profile=f"{settings.openai_source_answer_model}:low",
+                ),
             )
             for case in state["cases"]:
                 # Reserve before any call; crashes remain explicit and cannot be resumed.

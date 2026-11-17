@@ -1,6 +1,6 @@
 """Versioned bounded conversational planning and source-grounded answering."""
 
-CHAT_PIPELINE_VERSION = "grounded-chat-v16"
+CHAT_PIPELINE_VERSION = "grounded-chat-v17"
 PLANNER_PROMPT_VERSION = "planner-v3"
 ANSWER_PROMPT_VERSION = "answer-v13"
 
