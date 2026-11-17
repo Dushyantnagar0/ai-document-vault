@@ -99,9 +99,20 @@ class AsyncOpenAIEmbeddingProvider:
 
 class AsyncOpenAIGenerationProvider:
     def __init__(
-        self, settings: Settings, *, reasoning_effort: Literal["none", "low"] = "none"
+        self,
+        settings: Settings,
+        *,
+        reasoning_effort: Literal["none", "low"] = "none",
+        model: str | None = None,
     ) -> None:
         self.settings = settings
+        self.model = settings.openai_chat_model if model is None else model
+        if self.model not in {settings.CHAT_MODEL, settings.SOURCE_ANSWER_MODEL}:
+            raise ValueError("Unsupported generation model; add a reviewed model profile")
+        if reasoning_effort not in {"none", "low"} or (
+            self.model == settings.SOURCE_ANSWER_MODEL and reasoning_effort != "low"
+        ):
+            raise ValueError("Unsupported reasoning effort for the selected generation model")
         self.reasoning_effort = reasoning_effort
 
     async def generate(
@@ -127,7 +138,7 @@ class AsyncOpenAIGenerationProvider:
         try:
             async with asyncio.timeout(timeout):
                 model = ChatOpenAI(
-                    model=self.settings.openai_chat_model,
+                    model=self.model,
                     api_key=self.settings.openai_api_key,
                     max_retries=0,
                     timeout=timeout,
@@ -158,4 +169,4 @@ class AsyncOpenAIGenerationProvider:
             raise ProcessingError("ai_timeout", "AI request timed out.", retryable=True) from None
         except Exception as exc:
             raise provider_error(exc, max_output_tokens=max_output_tokens) from None
-        return _parse_generation(result, schema, self.settings.openai_chat_model, max_output_tokens)
+        return _parse_generation(result, schema, self.model, max_output_tokens)

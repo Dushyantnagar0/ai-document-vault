@@ -34,6 +34,8 @@ from app.core.config import ConfigurationError, Settings, get_settings
 from app.db.models import ChatTurn, Document, DocumentChunk, DocumentInsights, PerformanceSample
 from app.prompts.analysis import ANALYSIS_PROMPT_VERSION
 from app.prompts.chat import ANSWER_PROMPT_VERSION, CHAT_PIPELINE_VERSION, PLANNER_PROMPT_VERSION
+from app.services.source_answer import SOURCE_COMPOSITION_VERSION, SOURCE_SELECTION_VERSION
+from scripts.analysis_evaluation_profile import expected_review_profile, observed_review_profile
 from scripts.evaluation_fixtures import (
     BY_ID,
     CASES,
@@ -150,10 +152,15 @@ def _supplied_source_text(source: dict[str, Any]) -> str:
     return text
 
 
-def expected_versions(settings: Settings) -> dict[str, Any]:
-    """Only non-secret model/prompt/pipeline settings, matching persisted turns."""
-    return {
+def expected_versions(settings: Settings, *, intent: str | None = None) -> dict[str, Any]:
+    """Match persisted turn recipes, including configured answer/review effort.
+
+    Changing effort makes earlier evidence stale without rewriting its settings
+    or implicitly sending another request.
+    """
+    versions: dict[str, Any] = {
         "saved_analysis_prompt": ANALYSIS_PROMPT_VERSION,
+        "saved_analysis_review": expected_review_profile(settings),
         "chat_model": settings.openai_chat_model,
         "embedding_model": settings.openai_embedding_model,
         "planner_prompt": PLANNER_PROMPT_VERSION,
@@ -161,6 +168,21 @@ def expected_versions(settings: Settings) -> dict[str, Any]:
         "pipeline": CHAT_PIPELINE_VERSION,
         "retrieval": "exact-cosine-v1",
         "configuration": settings.chat_configuration,
+    }
+    return factual_versions(versions) if intent == "factual" else versions
+
+
+def factual_versions(versions: dict[str, Any]) -> dict[str, Any]:
+    """Expected role-specific versions; historical records are never rewritten."""
+    model = versions.get("configuration", {}).get("openai_source_answer_model")
+    return {
+        **versions,
+        "planner_model": versions["configuration"]["openai_chat_model"],
+        "chat_model": model,
+        "source_answer_model": model,
+        "answer_prompt": SOURCE_COMPOSITION_VERSION,
+        "source_selection": SOURCE_SELECTION_VERSION,
+        "source_composition": SOURCE_COMPOSITION_VERSION,
     }
 
 
@@ -170,6 +192,10 @@ def stale_reasons(record: dict[str, Any], expected: dict[str, Any]) -> list[str]
         return ["current_configuration_unavailable"]
     if not isinstance(observed, dict):
         observed = {}
+    if record.get("evidence", {}).get("planner_intent") == "factual" and expected.get(
+        "configuration", {}
+    ).get("openai_source_answer_model"):
+        expected = factual_versions(expected)
     return [
         f"{name}_missing" if name not in observed else f"{name}_changed"
         for name, value in expected.items()
@@ -548,10 +574,13 @@ class EvaluationRunner:
                     if code != 200 or (
                         analysis.get("prompt_version") != ANALYSIS_PROMPT_VERSION
                         or analysis.get("model") != self.settings.openai_chat_model
+                        or observed_review_profile(analysis.get("analysis", {}))
+                        != expected_review_profile(self.settings)
                     ):
                         raise EvaluationFailure("DOCUMENT_ANALYSIS_STALE_USE_NEW_RUN_ID")
                     known["analysis_prompt"] = analysis["prompt_version"]
                     known["analysis_model"] = analysis["model"]
+                    known["analysis_review"] = observed_review_profile(analysis["analysis"])
                     self.save()
                 return identifier
             if body["status"] == "FAILED":
@@ -667,11 +696,13 @@ class EvaluationRunner:
             )
             versions = dict(turn.versions or {})
             versions["saved_analysis_prompt"] = None
+            versions["saved_analysis_review"] = {}
             # Observe the published analysis even for factual queries. A current
             # chat prompt does not make an older ingestion result current.
             analysis = database.get(DocumentInsights, document.id)
             if analysis is not None and analysis.attempt_id == document.published_attempt_id:
                 versions["saved_analysis_prompt"] = analysis.prompt_version
+                versions["saved_analysis_review"] = observed_review_profile(analysis.payload)
             usage = database.scalars(
                 select(PerformanceSample)
                 .where(PerformanceSample.turn_id == turn.id)

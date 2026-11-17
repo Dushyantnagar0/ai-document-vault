@@ -16,6 +16,7 @@ from sqlalchemy import create_engine
 from app.core.config import get_settings
 from app.prompts.analysis import ANALYSIS_PROMPT_VERSION
 from app.prompts.chat import ANSWER_PROMPT_VERSION, CHAT_PIPELINE_VERSION, PLANNER_PROMPT_VERSION
+from scripts.analysis_evaluation_profile import expected_review_profile, review_stale_reasons
 from scripts.evaluate_ai import (
     EvaluationFailure,
     EvaluationRunner,
@@ -82,6 +83,7 @@ def _current_versions(state: dict[str, Any]) -> dict[str, Any]:
         "planner_prompt": PLANNER_PROMPT_VERSION,
         "answer_prompt": ANSWER_PROMPT_VERSION,
         "pipeline": CHAT_PIPELINE_VERSION,
+        "saved_analysis_review": expected_review_profile(),
     }
 
 
@@ -129,6 +131,8 @@ def _stale(state: dict[str, Any]) -> list[str]:
     analysis = state.get("analysis", {})
     if analysis and analysis.get("prompt_version") != ANALYSIS_PROMPT_VERSION:
         reasons.append("analysis_prompt_changed")
+    if analysis:
+        reasons.extend(review_stale_reasons(analysis))
     for case in QUALITY_CASES:
         record = state.get("cases", {}).get(case.id, {})
         if record.get("status") == "COMPLETED":
@@ -151,6 +155,7 @@ def review_binding(state: dict[str, Any]) -> dict[str, Any]:
         "quality_version": QUALITY_VERSION,
         "document_sha256": document["sha256"],
         "analysis_prompt": state["analysis"]["prompt_version"],
+        "analysis_review": expected_review_profile(),
         "answer_prompt": ANSWER_PROMPT_VERSION,
         "evidence_digest": _digest(
             {
@@ -353,6 +358,7 @@ class QualityRunner(EvaluationRunner):
             "upload_request_id": str(quality_request_id("upload", self.revision)),
             "revision": self.revision,
             "analysis_prompt": ANALYSIS_PROMPT_VERSION,
+            "analysis_review": expected_review_profile(),
             "status": "PLANNED",
         }
         self.save()
@@ -376,7 +382,10 @@ class QualityRunner(EvaluationRunner):
         A planned/pending replacement has no current analysis and is resumed unchanged.
         """
         analysis = self.state.get("analysis")
-        if not analysis or analysis.get("prompt_version") == ANALYSIS_PROMPT_VERSION:
+        if not analysis or (
+            analysis.get("prompt_version") == ANALYSIS_PROMPT_VERSION
+            and not review_stale_reasons(analysis)
+        ):
             return
         self._check_analysis_iteration()
         self.prepare_fixture()  # Verify the exact saved bytes before changing any artifact state.
@@ -413,7 +422,12 @@ class QualityRunner(EvaluationRunner):
             "revision": self.revision,
             "status": "PLANNED",
             "analysis_prompt": ANALYSIS_PROMPT_VERSION,
-            "reprocess_reason": "analysis_prompt_changed",
+            "analysis_review": expected_review_profile(),
+            "reprocess_reason": (
+                "analysis_prompt_changed"
+                if analysis.get("prompt_version") != ANALYSIS_PROMPT_VERSION
+                else "analysis_review_recipe_changed"
+            ),
         }
         # Archive complete before clearing current evidence; publish one atomic artifact
         # containing both history and the replacement identity before its first POST.
@@ -432,8 +446,15 @@ class QualityRunner(EvaluationRunner):
         ):
             raise EvaluationFailure("PENDING_ANALYSIS_PROMPT_CHANGED")
         if (
-            self.state.get("analysis", {}).get("prompt_version", ANALYSIS_PROMPT_VERSION)
-            != ANALYSIS_PROMPT_VERSION
+            not self.state.get("analysis")
+            and known
+            and known.get("analysis_review") != expected_review_profile()
+        ):
+            raise EvaluationFailure("PENDING_ANALYSIS_REVIEW_RECIPE_CHANGED")
+        if self.state.get("analysis", {}).get(
+            "prompt_version", ANALYSIS_PROMPT_VERSION
+        ) != ANALYSIS_PROMPT_VERSION or (
+            self.state.get("analysis") and review_stale_reasons(self.state["analysis"])
         ):
             self._check_analysis_iteration()
         for record in self.state["cases"].values():

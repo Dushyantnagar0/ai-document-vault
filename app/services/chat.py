@@ -5,10 +5,11 @@ import hashlib
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from sqlalchemy.orm import defer
 
@@ -66,6 +67,17 @@ from app.services.grounding import (
     validate_answer,
 )
 from app.services.ingestion import utcnow
+from app.services.source_answer import (
+    SOURCE_COMPOSITION_VERSION,
+    SOURCE_SELECTION_VERSION,
+    CompositionOutput,
+    SourceAnswerPlan,
+    SourceSelectionOutput,
+    prepare_composition_packet,
+    prepare_selection_packet,
+    project_composition,
+    validate_selection,
+)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -81,10 +93,14 @@ class ChatProcessor:
         embedder: AsyncEmbeddingProvider,
         *,
         reviewer: AsyncGenerationProvider,
+        source_answerer: AsyncGenerationProvider,
+        answerer: AsyncGenerationProvider | None = None,
     ) -> None:
         self.engine, self.settings, self.store = engine, settings, store
         self.retriever, self.generator, self.embedder = retriever, generator, embedder
         self.reviewer = reviewer
+        self.source_answerer = source_answerer
+        self.answerer = generator if answerer is None else answerer
         self.semaphore = asyncio.Semaphore(settings.api_max_concurrent_ai_requests)
 
     async def _sample(
@@ -151,6 +167,151 @@ class ChatProcessor:
             raise
         await self._sample(reservation, operation, started, result=result)
         return result
+
+    async def _source_answer(
+        self,
+        reservation: TurnReservation,
+        evidence: tuple[Evidence, ...],
+        *,
+        resolved_query: str | None = None,
+        complete_scope: bool = True,
+        source_record: dict[str, Any] | None = None,
+        persist: Callable[[], Awaitable[None]] | None = None,
+    ) -> tuple[GroundedAnswer, dict[str, Any]]:
+        """Select then compose with one shared structural repair and durable stage progress."""
+        settings = self.settings
+        record = source_record if source_record is not None else {}
+        record.update(
+            selection_version=SOURCE_SELECTION_VERSION,
+            composition_version=SOURCE_COMPOSITION_VERSION,
+            model=settings.openai_source_answer_model,
+            reasoning_effort="low",
+        )
+        catalog = answer_quote_catalog(evidence)
+        plan: SourceAnswerPlan | None = None
+        repaired = False
+        repairable = {
+            "ai_invalid_output",
+            "ai_output_truncated",
+            "ai_invalid_json",
+            "ai_schema_invalid",
+            "SOURCE_ANSWER_INVALID",
+            "SOURCE_ANSWER_OUTPUT_LIMIT",
+            "CHAT_INVALID_OUTPUT",
+        }
+        for stage in ("selection", "composition"):
+            stage_record: dict[str, Any] = {"status": "preflight"}
+            record[stage] = stage_record
+            if (
+                stage == "composition"
+                and plan is not None
+                and plan.evidence_status == "insufficient"
+            ):
+                answer = GroundedAnswer(INSUFFICIENT_ANSWER, "insufficient", [])
+                stage_record.update(status="skipped", reason="no_supported_components")
+                record["projection"] = {"status": "completed", "evidence_status": "insufficient"}
+                if persist is not None:
+                    await persist()
+                return answer, record
+            for attempt in range(2):
+                started = time.monotonic()
+                stage_record.update(attempt=attempt + 1, status="preflight")
+                stage_record.pop("result", None)
+                stage_record.pop("model", None)
+                try:
+                    if stage == "selection":
+                        packet = prepare_selection_packet(
+                            reservation.question,
+                            resolved_query,
+                            catalog,
+                            settings,
+                            repair=bool(attempt),
+                        )
+                    else:
+                        assert plan is not None
+                        packet = prepare_composition_packet(plan, settings, repair=bool(attempt))
+                    stage_record.update(
+                        prompt_version=packet.version,
+                        request_sha256=hashlib.sha256(packet.content.encode()).hexdigest(),
+                        input_tokens=packet.input_tokens,
+                        reserved_input_tokens=packet.reserved_input_tokens,
+                        input_limit=packet.input_limit,
+                        max_output_tokens=packet.max_output_tokens,
+                        status="requested",
+                    )
+                    generated = await self._generate(
+                        reservation,
+                        packet.schema,
+                        packet.system,
+                        packet.content,
+                        packet.max_output_tokens,
+                        f"chat.source_{stage}",
+                        settings.openai_generation_timeout_seconds,
+                        provider=self.source_answerer,
+                    )
+                    raw = generated.result.model_dump(mode="json")
+                    stage_record.update(result=raw, model=generated.model)
+                    record["model"] = generated.model
+                    try:
+                        if stage == "selection":
+                            selected = SourceSelectionOutput.model_validate(raw)
+                            plan = validate_selection(
+                                selected,
+                                catalog,
+                                question=reservation.question,
+                                resolved_query=resolved_query,
+                                complete_scope=complete_scope,
+                                max_output_tokens=packet.max_output_tokens,
+                            )
+                            record["quote_bindings"] = {
+                                identifier: {"source_id": str(ref.source_id), "quote": ref.quote}
+                                for identifier, ref in plan.passages
+                            }
+                        else:
+                            assert plan is not None
+                            answer = project_composition(
+                                plan,
+                                CompositionOutput.model_validate(raw),
+                                evidence,
+                                max_output_tokens=packet.max_output_tokens,
+                            )
+                            record["projection"] = {
+                                "status": "completed",
+                                "evidence_status": answer.evidence_status,
+                                "retained_block_count": len(answer.blocks),
+                                "citation_count": len(answer.citations),
+                            }
+                    except ValidationError:
+                        raise ProcessingError(
+                            "ai_schema_invalid",
+                            "Source-selected answer did not match its output contract.",
+                            diagnostics=AIFailureDetails(reason="schema_validation"),
+                        ) from None
+                    stage_record.update(status="completed")
+                    stage_record.pop("error", None)
+                    if stage == "composition":
+                        return answer, record
+                    break
+                except ProcessingError as error:
+                    details = error.diagnostics.as_dict() if error.diagnostics is not None else {}
+                    stage_record.update(
+                        status="failed", error={"code": error.code, "details": details}
+                    )
+                    if repaired or attempt or error.code not in repairable:
+                        raise
+                    repaired = True
+                    stage_record["repair"] = {
+                        "first_error_code": error.code,
+                        "first_error": details,
+                        "first_output_sha256": hashlib.sha256(
+                            json.dumps(stage_record.get("result"), sort_keys=True).encode()
+                        ).hexdigest(),
+                    }
+                finally:
+                    stage_record["duration_ms"] = (time.monotonic() - started) * 1000
+                    if persist is not None:
+                        await persist()
+        raise AssertionError("Source answer stages completed without an outcome")
 
     async def _review_answer(
         self,
@@ -258,7 +419,7 @@ class ChatProcessor:
         )
         selected_quote_ids = {
             q for decision in reviewed.result.decisions for q in decision.quote_ids
-        } | {q for group in reviewed.result.required_qualifications for q in group.quote_ids}
+        } | {q for group in reviewed.result.required_aspects for q in group.quote_ids}
         metadata = {
             "prompt_version": CHAT_REVIEW_PROMPT_VERSION,
             "projection_version": PROJECTION_VERSION,
@@ -269,7 +430,7 @@ class ChatProcessor:
             "draft_evidence_status": draft.evidence_status,
             "unanswered_parts": reviewed.result.unanswered_parts,
             "force_qualification_quotes": False,
-            "qualification_policy": "retained_claim_source_bindings",
+            "qualification_policy": "required_aspect_source_bindings",
             "projection_status": "pending",
             "review_attempt": 2 if repair else 1,
             "review": reviewed.result.model_dump(mode="json"),
@@ -446,7 +607,8 @@ class ChatProcessor:
             saved_analysis=saved_analysis,
             review_fits=(
                 None
-                if planner.intent == "exhaustive" and not complete_scope
+                if planner.intent == "factual"
+                or (planner.intent == "exhaustive" and not complete_scope)
                 else lambda sources: (
                     review_input_reservation(
                         answer_quote_catalog(sources), reservation.question, planner.query, settings
@@ -454,11 +616,18 @@ class ChatProcessor:
                     <= chat_review_input_limit(settings)
                 )
             ),
+            source_answer_query=planner.query if planner.intent == "factual" else None,
         )
         extractive_inventory = planner.intent == "exhaustive" and not prepared.complete_scope
         context = {
             "request_id": reservation.request_id,
-            "answer_mode": "partial_source_excerpts" if extractive_inventory else "synthesis",
+            "answer_mode": (
+                "source_selected"
+                if planner.intent == "factual"
+                else "partial_source_excerpts"
+                if extractive_inventory
+                else "synthesis"
+            ),
             "payload": json.loads(prepared.content),
             "candidate_ids": [str(item.id) for item in candidates],
             "selected_ids": [str(item.id) for item in prepared.evidence],
@@ -475,6 +644,28 @@ class ChatProcessor:
         phase = time.monotonic()
         if not prepared.evidence:
             answer = GroundedAnswer(INSUFFICIENT_ANSWER, "insufficient", [])
+        elif planner.intent == "factual":
+            context["source_answer"] = {}
+
+            async def persist_source() -> None:
+                timings["source_answer_ms"] = (time.monotonic() - phase) * 1000
+                await self.store.save_context(
+                    reservation,
+                    query=planner.query,
+                    intent=planner.intent,
+                    evidence_scope=prepared.evidence_scope,
+                    context=context,
+                    timings=timings,
+                )
+
+            answer, context["source_answer"] = await self._source_answer(
+                reservation,
+                prepared.evidence,
+                resolved_query=planner.query,
+                complete_scope=prepared.complete_scope,
+                source_record=context["source_answer"],
+                persist=persist_source,
+            )
         else:
             for repair in range(2):
                 try:
@@ -502,6 +693,7 @@ class ChatProcessor:
                         settings.chat_max_output_tokens,
                         "chat.answer",
                         settings.openai_generation_timeout_seconds,
+                        provider=self.answerer,
                     )
                     selection = (
                         exhaustive_selection_to_answer(
@@ -612,8 +804,14 @@ class ChatProcessor:
             "evidence_scope": prepared.evidence_scope,
             "extraction_coverage": doc.extraction_coverage,
             "warnings": doc.warnings,
-            "model": settings.openai_chat_model,
-            "prompt_version": ANSWER_PROMPT_VERSION,
+            "model": (
+                context.get("source_answer", {}).get("model", settings.openai_source_answer_model)
+                if planner.intent == "factual"
+                else settings.openai_chat_model
+            ),
+            "prompt_version": (
+                SOURCE_COMPOSITION_VERSION if planner.intent == "factual" else ANSWER_PROMPT_VERSION
+            ),
             "planner_prompt_version": PLANNER_PROMPT_VERSION,
         }
         return await self.store.complete(reservation, body, timings=timings)

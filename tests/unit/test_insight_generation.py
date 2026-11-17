@@ -44,8 +44,32 @@ def test_frozen_summary_and_original_passages_are_supplied_once() -> None:
     packet = json.loads(request["content"])
     assert packet["frozen_summary"] == [summary[0]["text"]]
     assert packet["evidence"][0]["text"] == catalog["q1"].quote
+    assert packet["evidence"][0]["source_id"] == "s1"
+    assert packet["source_index"] == {"s1": str(catalog["q1"].source_id)}
     assert request["max_output_tokens"] == 3072
     assert json.dumps(summary) == original
+
+
+def test_compact_evidence_preserves_source_groups_order_and_literal_text() -> None:
+    source_a, source_b = uuid4(), uuid4()
+    catalog = {
+        "q1": QuoteReference(source_a, "First passage.\n"),
+        "q2": QuoteReference(source_b, "Repeated text."),
+        "q3": QuoteReference(source_a, "Repeated text."),
+    }
+    original = dict(catalog)
+    generator = Generator([])
+    generate_candidates([{"text": "A frozen summary."}], catalog, generator, lambda: 30)
+    request = json.loads(generator.calls[0]["content"])
+    assert request["source_index"] == {"s1": str(source_a), "s2": str(source_b)}
+    assert [entry["source_id"] for entry in request["evidence"]] == ["s1", "s2", "s1"]
+    assert [(entry["quote_id"], entry["text"]) for entry in request["evidence"]] == [
+        (identifier, reference.quote) for identifier, reference in catalog.items()
+    ]
+    assert all(
+        generator.calls[0]["content"].count(str(source)) == 1 for source in (source_a, source_b)
+    )
+    assert catalog == original
 
 
 @pytest.mark.parametrize("ids", [["unknown"], ["q1", "q1"]])

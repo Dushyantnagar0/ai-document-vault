@@ -8,6 +8,7 @@ import pytest
 from app.domain.documents import ProcessingError
 from app.services.analysis_evidence import QuoteReference
 from app.services.evidence_review import (
+    RequiredQualification,
     ReviewOutput,
     ReviewPacket,
     prepare_review,
@@ -38,6 +39,43 @@ def verdict(packet: ReviewPacket) -> dict[str, Any]:
     }
 
 
+def test_internal_aspect_inventory_can_supplement_more_than_four_groups() -> None:
+    packet = prepare_review({"answer": [{"text": "Original fact 1."}]}, catalog(8))
+    result = project_review(
+        packet,
+        ReviewOutput.model_validate(verdict(packet)),
+        required_qualifications_override=tuple(
+            RequiredQualification(quote_ids=[f"q{i}"], conveyed_by_claim_ids=[])
+            for i in range(1, 9)
+        ),
+    )
+    assert "Original fact 8." in str(result.payload)
+    assert result.scope_complete is True
+
+
+def test_aspect_inventory_override_cannot_hide_unknown_raw_qualification() -> None:
+    packet = prepare_review({"answer": [{"text": "Original fact 1."}]}, catalog())
+    raw = verdict(packet)
+    raw["required_qualifications"] = [{"quote_ids": ["unknown"], "conveyed_by_claim_ids": []}]
+    with pytest.raises(ProcessingError):
+        project_review(
+            packet, ReviewOutput.model_validate(raw), required_qualifications_override=()
+        )
+
+
+def test_internal_aspect_inventory_is_bounded() -> None:
+    packet = prepare_review({"answer": [{"text": "Original fact 1."}]}, catalog(9))
+    with pytest.raises(ProcessingError):
+        project_review(
+            packet,
+            ReviewOutput.model_validate(verdict(packet)),
+            required_qualifications_override=tuple(
+                RequiredQualification(quote_ids=[f"q{i}"], conveyed_by_claim_ids=[])
+                for i in range(1, 10)
+            ),
+        )
+
+
 def test_claim_identity_and_exact_unicode_prose_survive_unchanged_projection() -> None:
     text = "Zoë owns the file. \nA second fact remains unchanged."
     draft = {"summary": [{"text": text}], "insights": [], "model": "ignored metadata"}
@@ -49,6 +87,27 @@ def test_claim_identity_and_exact_unicode_prose_survive_unchanged_projection() -
     assert result.payload["summary"][0]["text"] == text
     assert result.scope_complete is True
     assert result.dropped_claim_ids == ()
+
+
+@pytest.mark.parametrize("failure", ["unknown_claim", "unknown_quote", "duplicate_decision"])
+def test_excluded_claims_do_not_bypass_identity_validation(failure: str) -> None:
+    packet = prepare_review(
+        {"answer": [{"text": "Requested fact."}, {"text": "Unrelated fact."}]}, catalog()
+    )
+    raw = verdict(packet)
+    excluded = "a2.1"
+    if failure == "unknown_claim":
+        excluded = "unknown-canary"
+    elif failure == "unknown_quote":
+        raw["decisions"][1]["quote_ids"] = ["unknown-canary"]
+    else:
+        raw["decisions"].append(dict(raw["decisions"][1]))
+    with pytest.raises(ProcessingError) as caught:
+        project_review(
+            packet, ReviewOutput.model_validate(raw), excluded_claim_ids=frozenset({excluded})
+        )
+    assert caught.value.code == "EVIDENCE_REVIEW_INVALID"
+    assert "unknown-canary" not in str(caught.value)
 
 
 @pytest.mark.parametrize(
@@ -175,11 +234,11 @@ def test_union_overflow_splits_supported_claims_when_block_capacity_remains() ->
 
 def test_summary_block_overflow_does_not_silently_claim_complete_scope() -> None:
     packet = prepare_review(
-        {"summary": [{"text": f"Fact {index}."} for index in range(9)]}, catalog()
+        {"summary": [{"text": f"Fact {index}."} for index in range(17)]}, catalog()
     )
     result = project_review(packet, ReviewOutput.model_validate(verdict(packet)))
-    assert len(result.payload["summary"]) == 8
-    assert result.dropped_claim_ids == ("s9.1",)
+    assert len(result.payload["summary"]) == 16
+    assert result.dropped_claim_ids == ("s17.1",)
     assert result.scope_complete is False
 
 
@@ -677,10 +736,10 @@ def test_same_passage_false_coverage_remains_a_known_semantic_limitation() -> No
     assert "restart" not in result.payload["answer"][0]["text"]
 
 
-def test_union_split_overflow_still_drops_claim_when_global_block_cap_is_full() -> None:
+def test_union_split_overflow_still_drops_claim_when_chat_block_cap_is_full() -> None:
     packet = prepare_review(
         {
-            "summary": [{"text": f"Recorded fact {n}."} for n in range(7)]
+            "answer": [{"text": f"Recorded fact {n}."} for n in range(7)]
             + [{"text": "First supported fact. Second fact."}]
         },
         catalog(10),
@@ -689,8 +748,8 @@ def test_union_split_overflow_still_drops_claim_when_global_block_cap_is_full() 
     raw["decisions"][7]["quote_ids"] = [f"q{n}" for n in range(1, 6)]
     raw["decisions"][8]["quote_ids"] = [f"q{n}" for n in range(6, 11)]
     result = project_review(packet, ReviewOutput.model_validate(raw))
-    assert len(result.payload["summary"]) == 8
-    assert result.dropped_claim_ids == ("s8.2",)
+    assert len(result.payload["answer"]) == 8
+    assert result.dropped_claim_ids == ("a8.2",)
     assert result.scope_complete is False
 
 

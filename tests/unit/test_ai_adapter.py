@@ -73,10 +73,20 @@ def test_embedding_single_actual_request_no_automatic_splitting_or_retry(
     assert json.loads(requests[0].content)["dimensions"] == 1536
 
 
-@pytest.mark.parametrize("effort", ["none", "low"])
+@pytest.mark.parametrize(
+    "effort,selected_model,returned_model",
+    [
+        ("none", None, Settings.CHAT_MODEL),
+        ("low", None, Settings.CHAT_MODEL),
+        ("low", Settings.ANALYSIS_REVIEW_MODEL, Settings.ANALYSIS_REVIEW_MODEL),
+        ("low", Settings.ANALYSIS_REVIEW_MODEL, Settings.CHAT_MODEL),
+    ],
+)
 def test_generation_real_sdk_strict_schema_reasoning_setting_and_no_retry(
     monkeypatch: pytest.MonkeyPatch,
     effort: str,
+    selected_model: str | None,
+    returned_model: str,
 ) -> None:
     requests: list[httpx2.Request] = []
     options: list[dict[str, Any]] = []
@@ -89,7 +99,7 @@ def test_generation_real_sdk_strict_schema_reasoning_setting_and_no_retry(
                 "id": "unit-response",
                 "object": "chat.completion",
                 "created": 1,
-                "model": Settings.CHAT_MODEL,
+                "model": returned_model,
                 "choices": [
                     {
                         "index": 0,
@@ -116,23 +126,52 @@ def test_generation_real_sdk_strict_schema_reasoning_setting_and_no_retry(
         )
 
     monkeypatch.setattr(adapter, "ChatOpenAI", factory)
-    result = adapter.OpenAIGenerationProvider(settings(), reasoning_effort=effort).generate(
-        schema=Output,
-        system="Source-only.",
-        content="evidence",
-        max_output_tokens=99,
-        timeout_seconds=4,
+    provider = adapter.OpenAIGenerationProvider(
+        settings(), reasoning_effort=effort, model=selected_model
     )
-    assert len(requests) == 1 and result.result.answer == "source backed"
+    arguments = {
+        "schema": Output,
+        "system": "Source-only.",
+        "content": "evidence",
+        "max_output_tokens": 99,
+        "timeout_seconds": 4,
+    }
+    expected_model = selected_model or Settings.CHAT_MODEL
+    if returned_model == expected_model:
+        result = provider.generate(**arguments)
+        assert result.result.answer == "source backed" and result.model == expected_model
+        assert result.input_tokens == 30 and result.output_tokens == 8
+    else:
+        with pytest.raises(ProcessingError) as failure:
+            provider.generate(**arguments)
+        assert failure.value.code == "ai_model_mismatch"
+        assert failure.value.retryable is False
+    assert len(requests) == 1
     body = json.loads(requests[0].content)
-    assert body["model"] == Settings.CHAT_MODEL
+    assert body["model"] == expected_model
     assert body["reasoning_effort"] == effort
     assert body["max_completion_tokens"] == 99
     assert body["response_format"]["type"] == "json_schema"
     assert body["response_format"]["json_schema"]["strict"] is True
     assert options[0]["max_retries"] == 0
     assert requests[0].extensions["timeout"]["read"] == 4
-    assert result.input_tokens == 30 and result.output_tokens == 8
+    assert provider.settings.openai_chat_model == Settings.CHAT_MODEL
+
+
+@pytest.mark.parametrize(
+    "arguments,diagnostic",
+    [
+        ({"model": Settings.ANALYSIS_REVIEW_MODEL}, "reasoning effort"),
+        ({"model": "unreviewed-model", "reasoning_effort": "low"}, "reviewed model"),
+        ({"reasoning_effort": "high"}, "reasoning effort"),
+    ],
+)
+def test_generation_rejects_unsupported_model_effort_before_provider_work(
+    monkeypatch: pytest.MonkeyPatch, arguments: dict[str, Any], diagnostic: str
+) -> None:
+    monkeypatch.setattr(adapter, "ChatOpenAI", lambda **kwargs: pytest.fail("Unexpected provider"))
+    with pytest.raises(ValueError, match=diagnostic):
+        adapter.OpenAIGenerationProvider(settings(), **arguments)
 
 
 @pytest.mark.parametrize(

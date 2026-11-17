@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, Mock
 from uuid import uuid4
 
@@ -13,6 +13,7 @@ import pytest
 from app.core.config import Settings
 from app.db.models import Document
 from scripts import evaluate_ai
+from scripts.analysis_evaluation_profile import expected_review_profile
 from scripts.evaluate_ai import EvaluationFailure, EvaluationRunner
 from scripts.evaluation_fixtures import BY_ID, case_request_id, upload_request_id
 
@@ -70,6 +71,45 @@ def test_changed_recipe_refuses_run_resume_before_transport(
     original.client.request.assert_not_called()
 
 
+def test_answer_effort_change_invalidates_run_recipe_without_altering_saved_evidence(
+    tmp_path: Path,
+) -> None:
+    original = make_runner(tmp_path, "effort-bound")
+    original.save()
+    original_bytes = original.path.read_bytes()
+    observed = original.state["recipe"]["versions"]["configuration"]
+    assert observed["openai_answer_reasoning_effort"] == "low"
+    changed = Settings(
+        _env_file=None,
+        openai_api_key="test-placeholder",
+        local_storage_dir=tmp_path,
+        openai_answer_reasoning_effort="none",
+    )
+    with pytest.raises(EvaluationFailure, match="RUN_RECIPE_CHANGED_USE_NEW_RUN_ID"):
+        EvaluationRunner(
+            changed, original.client, original.engine, original.path, run_id="effort-bound"
+        )
+    assert original.path.read_bytes() == original_bytes
+    cast(Mock, original.client).request.assert_not_called()
+    cast(Mock, original.engine).assert_not_called()
+
+
+def test_factual_evidence_requires_its_actual_source_model_and_stage_versions() -> None:
+    settings = Settings(_env_file=None, openai_api_key="test-placeholder")
+    expected = evaluate_ai.expected_versions(settings)
+    factual = {
+        "versions": evaluate_ai.expected_versions(settings, intent="factual"),
+        "evidence": {"planner_intent": "factual"},
+    }
+    assert evaluate_ai.stale_reasons(factual, expected) == []
+    factual["versions"]["chat_model"] = settings.openai_chat_model
+    assert "chat_model_changed" in evaluate_ai.stale_reasons(factual, expected)
+    factual["versions"] = expected
+    assert "source_composition_missing" in evaluate_ai.stale_reasons(factual, expected)
+    overview = {"versions": expected, "evidence": {"planner_intent": "overview"}}
+    assert evaluate_ai.stale_reasons(overview, expected) == []
+
+
 def test_namespaced_run_refuses_revision_mix(tmp_path: Path) -> None:
     with pytest.raises(EvaluationFailure):
         make_runner(tmp_path, "frozen", revision=2)
@@ -89,6 +129,7 @@ def test_uploads_and_sessions_are_isolated_and_resume_without_writes(
             return 200, {
                 "prompt_version": evaluate_ai.ANALYSIS_PROMPT_VERSION,
                 "model": "gpt-5.4-mini-2026-03-17",
+                "analysis": {"evidence_review": expected_review_profile()},
             }
         if method == "GET" and path.startswith("/api/v1/documents/"):
             return 200, {"status": "COMPLETED", "chunk_count": 1}
@@ -140,6 +181,7 @@ def test_freshness_uses_actual_published_analysis_not_current_constant(
                 uuid4() if provenance == "other_attempt" else document.published_attempt_id
             ),
             prompt_version="analysis-historical-test-version",
+            payload={"evidence_review": {"prompt_version": "evidence-review-v9"}},
         )
     )
     database = MagicMock()
@@ -158,6 +200,10 @@ def test_freshness_uses_actual_published_analysis_not_current_constant(
     reasons = evaluate_ai.stale_reasons({"versions": snapshot["versions"]}, expected)
     assert "saved_analysis_prompt_changed" in reasons
     assert "saved_analysis_prompt" not in turn.versions
+    assert "saved_analysis_review" not in turn.versions
+    assert snapshot["versions"]["saved_analysis_review"] == (
+        {"prompt_version": "evidence-review-v9"} if provenance == "matching" else {}
+    )
     assert json.loads(json.dumps(snapshot))["versions"]["saved_analysis_prompt"] == observed
     runner.client.request.assert_not_called()
 
@@ -227,7 +273,9 @@ def test_isolated_run_stops_after_first_failed_or_unresolved_case(
     client.request.assert_not_called()
 
 
-@pytest.mark.parametrize("field", ["prompt_version", "model"])
+@pytest.mark.parametrize(
+    "field", ["prompt_version", "model", "review_prompt", "review_model", "review_effort"]
+)
 def test_old_analysis_is_rejected_before_creating_a_conversation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
 ) -> None:
@@ -242,8 +290,17 @@ def test_old_analysis_is_rejected_before_creating_a_conversation(
             result = {
                 "prompt_version": evaluate_ai.ANALYSIS_PROMPT_VERSION,
                 "model": runner.settings.openai_chat_model,
+                "analysis": {"evidence_review": expected_review_profile()},
             }
-            result[field] = "old-version"
+            if field.startswith("review_"):
+                key = {
+                    "review_prompt": "prompt_version",
+                    "review_model": "model",
+                    "review_effort": "reasoning_effort",
+                }[field]
+                result["analysis"]["evidence_review"][key] = "old-version"
+            else:
+                result[field] = "old-version"
             return 200, result
         return 200, {"status": "COMPLETED", "chunk_count": 1}
 

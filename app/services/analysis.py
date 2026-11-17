@@ -31,21 +31,36 @@ from app.prompts.analysis import (
     generation_prompt_tokens,
 )
 from app.services.analysis_evidence import (
+    MAX_FINAL_SUMMARY_BLOCKS,
     QUOTE_CATALOG_VERSION,
+    QuoteReference,
     SelectionOutput,
     build_quote_catalog,
     selection_to_payload,
 )
+from app.services.analysis_review import (
+    ANALYSIS_REVIEW_PROMPT_VERSION,
+    ANALYSIS_REVIEW_REPAIR_VARIANTS,
+    ANALYSIS_REVIEW_SYSTEM,
+    INSIGHT_VALUE_PROJECTION_VERSION,
+    analysis_review_repair_instruction,
+    analysis_review_schema,
+    project_analysis_review,
+)
 from app.services.evidence_review import (
     PROJECTION_VERSION,
-    REVIEW_PROMPT_VERSION,
-    REVIEW_REPAIR,
-    REVIEW_SYSTEM,
-    ReviewOutput,
+    ReviewClaim,
+    ReviewPacket,
     prepare_review,
-    project_review,
 )
-from app.services.insight_generation import INSIGHT_PROMPT_VERSION, generate_candidates
+from app.services.insight_generation import (
+    INSIGHT_PROMPT_VERSION,
+    INSIGHT_SYSTEM,
+    InsightCandidates,
+    candidate_content,
+    generate_candidates,
+)
+from app.services.prompt_evidence import COMPACT_EVIDENCE_VERSION, compact_evidence
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -114,7 +129,7 @@ class FactualBlock(BaseModel):
 
 class AnalysisOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
-    summary: list[FactualBlock] = Field(min_length=1, max_length=8)
+    summary: list[FactualBlock] = Field(min_length=1, max_length=MAX_FINAL_SUMMARY_BLOCKS)
     insights: list[FactualBlock] = Field(max_length=5)
 
 
@@ -177,6 +192,90 @@ def _writing_units(text: str) -> tuple[str, ...]:
 
 def _tokens(value: str) -> int:
     return len(tiktoken.get_encoding("o200k_base").encode(value, disallowed_special=()))
+
+
+def quality_input_limit(settings: Settings, max_output_tokens: int) -> int:
+    """Intersect the existing application, provider-input and context budgets."""
+    return max(
+        0,
+        min(
+            settings.analysis_group_max_tokens
+            + settings.summary_max_output_tokens
+            + settings.insight_max_visible_tokens
+            + settings.INSTRUCTION_RESERVE_TOKENS,
+            settings.CHAT_MODEL_MAX_INPUT_TOKENS,
+            settings.CHAT_CONTEXT_TOKENS - max_output_tokens,
+        ),
+    )
+
+
+def prepare_analysis_review(
+    draft: dict[str, Any], catalog: dict[str, QuoteReference]
+) -> ReviewPacket:
+    """Compact only the wire packet; retain the original catalog for projection."""
+    packet = prepare_review(draft, catalog)
+    content = json.loads(packet.content)
+    content.update(compact_evidence(catalog))
+    content["insight_candidates"] = _insight_manifest(packet.claims)
+    return replace(packet, content=json.dumps(content, ensure_ascii=False, separators=(",", ":")))
+
+
+def _insight_manifest(claims: Sequence[ReviewClaim]) -> list[dict[str, Any]]:
+    """Name actual frozen candidates without introducing model-generated labels."""
+    blocks: dict[int, list[str]] = {}
+    for claim in claims:
+        if claim.kind == "insights":
+            blocks.setdefault(claim.block_index, []).append(claim.id)
+    return [{"block_index": index, "claim_ids": ids} for index, ids in sorted(blocks.items())]
+
+
+def quality_input_reservations(
+    catalog: dict[str, QuoteReference], settings: Settings
+) -> tuple[int, int]:
+    """Reserve complete downstream prompts before committing to final synthesis.
+
+    Include all original passages, source identities, instructions and schemas,
+    all 64 permitted claim frames and the possible review repair. Reserve two
+    generated-output budgets for prose plus encoding/framing expansion, as for
+    chat review. This conservative estimate is not a tokenizer upper-bound proof;
+    actual assembled prompts still pass the authoritative guard before any call.
+    """
+    insight_tokens = (
+        generation_prompt_tokens(
+            InsightCandidates,
+            INSIGHT_SYSTEM,
+            candidate_content([{"text": ""} for _ in range(8)], catalog),
+        )
+        + 2 * settings.summary_max_output_tokens
+    )
+    # Use all 64 claim slots in the manifest and all three candidate indices to
+    # reserve its largest framing. This is sizing data, never an outbound draft.
+    reservation_claims = tuple(
+        ReviewClaim(f"i{index % 3 + 1}.{index + 1}", "insights", index % 3, "")
+        for index in range(64)
+    )
+    reservation_packet = ReviewPacket("", reservation_claims, catalog, ("summary", "insights"))
+    review_content = {
+        "question": None,
+        "claims": [
+            {"claim_id": f"s8.{index + 1}", "kind": "summary", "block_index": 7, "text": ""}
+            for index in range(64)
+        ],
+        "insight_candidates": _insight_manifest(reservation_claims),
+        **compact_evidence(catalog),
+    }
+    # generation_prompt_tokens counts system/content/schema separately. Choose
+    # the largest system variant without repeatedly tokenizing the source catalog.
+    review_system = max(
+        (ANALYSIS_REVIEW_SYSTEM + repair for repair in ANALYSIS_REVIEW_REPAIR_VARIANTS),
+        key=_tokens,
+    )
+    review_tokens = generation_prompt_tokens(
+        analysis_review_schema(reservation_packet),
+        review_system,
+        json.dumps(review_content, ensure_ascii=False, separators=(",", ":")),
+    ) + 2 * (settings.summary_max_output_tokens + settings.insight_max_visible_tokens)
+    return insight_tokens, review_tokens
 
 
 def _record_failed_call(call: dict[str, Any], error: ProcessingError, output_budget: int) -> None:
@@ -265,9 +364,11 @@ class _QualityGeneration:
         before_call: BeforeCall,
         calls: list[dict[str, Any]],
         stage: str,
+        expected_model: str,
     ) -> None:
         self.provider, self.settings, self.before_call = provider, settings, before_call
         self.calls, self.stage = calls, stage
+        self.expected_model = expected_model
 
     def generate(
         self,
@@ -280,18 +381,7 @@ class _QualityGeneration:
     ) -> Generated[T]:
         settings = self.settings
         prompt_tokens = generation_prompt_tokens(schema, system, content)
-        # Same bounded original evidence as final synthesis, plus its frozen draft.
-        input_budget = (
-            settings.analysis_group_max_tokens
-            + settings.summary_max_output_tokens
-            + settings.insight_max_visible_tokens
-            + settings.INSTRUCTION_RESERVE_TOKENS
-        )
-        if (
-            prompt_tokens > input_budget
-            or prompt_tokens > settings.CHAT_MODEL_MAX_INPUT_TOKENS
-            or prompt_tokens + max_output_tokens > settings.CHAT_CONTEXT_TOKENS
-        ):
+        if prompt_tokens > quality_input_limit(settings, max_output_tokens):
             raise ProcessingError(
                 "analysis_prompt_limit", "Complete quality-review prompt exceeds its budget."
             )
@@ -319,7 +409,7 @@ class _QualityGeneration:
                 output_tokens=result.output_tokens,
                 model=result.model,
             )
-            if result.model != settings.openai_chat_model:
+            if result.model != self.expected_model:
                 raise ProcessingError("ai_model_mismatch", "Analysis model profile does not match.")
             if result.output_tokens is not None and result.output_tokens > max_output_tokens:
                 raise ProcessingError(
@@ -374,6 +464,24 @@ def analyse_document(
     ]
     lineage: list[dict[str, Any]] = []
     calls: list[dict[str, Any]] = []
+
+    def quality_fits(catalog: dict[str, QuoteReference]) -> bool:
+        insight_tokens, review_tokens = quality_input_reservations(catalog, settings)
+        return insight_tokens <= quality_input_limit(
+            settings, settings.insight_max_output_tokens
+        ) and review_tokens <= quality_input_limit(
+            settings, settings.evidence_review_max_output_tokens
+        )
+
+    def final_fits(group: Sequence[_Node]) -> bool:
+        return _tokens(_content("final", group)) <= settings.analysis_group_max_tokens and (
+            reviewer is None or quality_fits(build_quote_catalog(_evidence(group)))
+        )
+
+    if reviewer is not None and not quality_fits({}):
+        raise ProcessingError(
+            "analysis_prompt_limit", "Quality output reservations cannot fit the input budget."
+        )
 
     def generate(group: Sequence[_Node], stage: str, *, final: bool = False) -> _Node:
         content = _content(stage, group)
@@ -484,7 +592,7 @@ def analyse_document(
             return _Node(item={"analysis": item}, covered=covered, evidence=quotes)
         raise AssertionError("Bounded repair loop must return or raise")
 
-    if _tokens(_content("final", nodes)) <= settings.analysis_group_max_tokens:
+    if final_fits(nodes):
         final_evidence = _evidence(nodes)
         final = generate(nodes, "final", final=True)
     else:
@@ -493,7 +601,7 @@ def analyse_document(
             for group in _groups(nodes, "section", settings.analysis_group_max_tokens)
         ]
         for _depth in range(MAX_REDUCTION_DEPTH):
-            if _tokens(_content("final", nodes)) <= settings.analysis_group_max_tokens:
+            if final_fits(nodes):
                 break
             previous_size = _tokens(_content("reduce", nodes))
             reduced = [
@@ -506,7 +614,7 @@ def analyse_document(
                 )
             nodes = reduced
         else:
-            if _tokens(_content("final", nodes)) > settings.analysis_group_max_tokens:
+            if not final_fits(nodes):
                 raise ProcessingError(
                     "analysis_reduction_limit", "Analysis reduction depth was exhausted."
                 )
@@ -525,7 +633,14 @@ def analyse_document(
             candidates = generate_candidates(
                 payload["summary"],
                 catalog,
-                _QualityGeneration(insight_generator, settings, before_call, calls, "insights"),
+                _QualityGeneration(
+                    insight_generator,
+                    settings,
+                    before_call,
+                    calls,
+                    "insights",
+                    settings.openai_chat_model,
+                ),
                 # The proxy reserves immediately before the actual outbound call.
                 lambda: settings.openai_generation_timeout_seconds,
                 max_visible_tokens=settings.insight_max_visible_tokens,
@@ -536,23 +651,35 @@ def analyse_document(
                 "summary": payload["summary"],
                 "insights": [block.model_dump(mode="json") for block in candidates.result.insights],
             }
-            packet = prepare_review(draft, catalog)
+            packet = prepare_analysis_review(draft, catalog)
+            review_schema = analysis_review_schema(packet)
+            review_repair_reason: str | None = None
             active_stage = "evidence_review"
             for review_attempt in range(2):
                 previous_calls = len(calls)
                 try:
                     response = _QualityGeneration(
-                        reviewer, settings, before_call, calls, "evidence_review"
+                        reviewer,
+                        settings,
+                        before_call,
+                        calls,
+                        "evidence_review",
+                        settings.openai_analysis_review_model,
                     ).generate(
-                        schema=ReviewOutput,
-                        system=REVIEW_SYSTEM + (REVIEW_REPAIR if review_attempt else ""),
+                        schema=review_schema,
+                        system=ANALYSIS_REVIEW_SYSTEM
+                        + (
+                            analysis_review_repair_instruction(review_repair_reason)
+                            if review_attempt
+                            else ""
+                        ),
                         content=packet.content,
                         max_output_tokens=settings.evidence_review_max_output_tokens,
                         timeout_seconds=settings.openai_generation_timeout_seconds,
                     )
                     calls[-1]["repair"] = bool(review_attempt)
-                    reviewed = ReviewOutput.model_validate(response.result)
-                    projection = project_review(packet, reviewed)
+                    reviewed = review_schema.model_validate(response.result)
+                    projection = project_analysis_review(packet, reviewed)
                     break
                 except (ProcessingError, ValidationError) as failure:
                     error = (
@@ -578,6 +705,9 @@ def analyse_document(
                         "ai_schema_invalid",
                     }:
                         raise error from None
+                    review_repair_reason = (
+                        error.diagnostics.reason if error.diagnostics is not None else None
+                    )
             output = AnalysisOutput.model_validate(projection.payload)
             _validate_sources(output, final_evidence, originals, final=True)
             visible_tokens = _tokens(
@@ -632,10 +762,14 @@ def analyse_document(
                 }
             ],
             evidence_review={
-                "prompt_version": REVIEW_PROMPT_VERSION,
+                "prompt_version": ANALYSIS_REVIEW_PROMPT_VERSION,
+                "model": response.model,
+                "reasoning_effort": settings.ANALYSIS_REVIEW_REASONING_EFFORT,
                 "projection_version": PROJECTION_VERSION,
+                "insight_value_projection_version": INSIGHT_VALUE_PROJECTION_VERSION,
                 "insight_prompt_version": INSIGHT_PROMPT_VERSION,
                 "quote_catalog_version": QUOTE_CATALOG_VERSION,
+                "evidence_format_version": COMPACT_EVIDENCE_VERSION,
                 "evidence_basis": "original_passages_supplied_to_final_synthesis",
                 "catalog_sha256": hashlib.sha256(
                     json.dumps(

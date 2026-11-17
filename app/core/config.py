@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     # Primary metadata: https://developers.openai.com/api/docs/models/gpt-5.4-mini.md
     # and /guides/embeddings. Not a claim of account access/live verification.
     CHAT_MODEL: ClassVar[str] = "gpt-5.4-mini-2026-03-17"
+    # Reviewed published alias, not a dated snapshot. Its 1,050,000 context,
+    # 922,000 input and 128,000 output capacities exceed the shared conservative
+    # limits below: https://developers.openai.com/api/docs/models/gpt-6.1-sol.md
+    SOURCE_ANSWER_MODEL: ClassVar[str] = "gpt-6.1-sol"
+    SOURCE_ANSWER_REASONING_EFFORT: ClassVar[Literal["low"]] = "low"
+    ANALYSIS_REVIEW_MODEL: ClassVar[str] = "gpt-6.1-sol"
+    ANALYSIS_REVIEW_REASONING_EFFORT: ClassVar[Literal["low"]] = "low"
     CHAT_CONTEXT_TOKENS: ClassVar[int] = 400_000
     CHAT_MODEL_MAX_INPUT_TOKENS: ClassVar[int] = 272_000
     CHAT_MODEL_MAX_OUTPUT_TOKENS: ClassVar[int] = 128_000
@@ -51,6 +58,8 @@ class Settings(BaseSettings):
 
     openai_api_key: SecretStr = Field(repr=False)
     openai_chat_model: str = CHAT_MODEL
+    openai_source_answer_model: str = SOURCE_ANSWER_MODEL
+    openai_analysis_review_model: str = ANALYSIS_REVIEW_MODEL
     openai_embedding_model: str = EMBEDDING_MODEL
     openai_embedding_dimensions: PositiveInt = SCHEMA_VECTOR_DIMENSIONS
 
@@ -98,6 +107,7 @@ class Settings(BaseSettings):
     retrieval_max_tokens: PositiveInt = 6400
     chat_prompt_max_tokens: PositiveInt = 12_000
     chat_max_output_tokens: PositiveInt = 1200
+    openai_answer_reasoning_effort: Literal["none", "low"] = "low"
 
     openai_embedding_timeout_seconds: PositiveSeconds = 15
     openai_generation_timeout_seconds: PositiveSeconds = 30
@@ -177,6 +187,14 @@ class Settings(BaseSettings):
     def validate_joint_budgets(self) -> Self:
         if self.openai_chat_model != self.CHAT_MODEL:
             raise ValueError("Unsupported chat model metadata; add a reviewed model profile")
+        if self.openai_source_answer_model != self.SOURCE_ANSWER_MODEL:
+            raise ValueError(
+                "Unsupported source-answer model metadata; add a reviewed model profile"
+            )
+        if self.openai_analysis_review_model != self.ANALYSIS_REVIEW_MODEL:
+            raise ValueError(
+                "Unsupported analysis-review model metadata; add a reviewed model profile"
+            )
         if self.openai_embedding_model != self.EMBEDDING_MODEL:
             raise ValueError("Unsupported embedding model metadata; add a reviewed index profile")
         if self.openai_embedding_dimensions != self.SCHEMA_VECTOR_DIMENSIONS:
@@ -265,6 +283,7 @@ class Settings(BaseSettings):
         """Non-secret recipe persisted with turns for reproducible evaluation."""
         names = (
             "openai_chat_model",
+            "openai_source_answer_model",
             "openai_embedding_model",
             "openai_embedding_dimensions",
             "planner_max_output_tokens",
@@ -277,13 +296,17 @@ class Settings(BaseSettings):
             "retrieval_max_tokens",
             "chat_prompt_max_tokens",
             "chat_max_output_tokens",
+            "openai_answer_reasoning_effort",
             "evidence_review_max_output_tokens",
             "openai_review_reasoning_effort",
             "openai_embedding_timeout_seconds",
             "openai_generation_timeout_seconds",
             "chat_timeout_seconds",
         )
-        return {name: getattr(self, name) for name in names}
+        return {
+            **{name: getattr(self, name) for name in names},
+            "openai_source_answer_reasoning_effort": self.SOURCE_ANSWER_REASONING_EFFORT,
+        }
 
     @property
     def database_url(self) -> URL:

@@ -14,9 +14,17 @@ from app.adapters.openai import OpenAIGenerationProvider
 from app.core.config import get_settings
 from app.db.models import DocumentInsights
 from app.domain.documents import ProcessingError
+from app.services.analysis import prepare_analysis_review
 from app.services.analysis_evidence import QuoteReference, build_quote_catalog
-from app.services.evidence_review import REVIEW_SYSTEM, ReviewOutput, prepare_review, project_review
-from app.services.insight_generation import generate_candidates
+from app.services.analysis_review import (
+    ANALYSIS_REVIEW_PROMPT_VERSION,
+    ANALYSIS_REVIEW_SYSTEM,
+    INSIGHT_VALUE_PROJECTION_VERSION,
+    analysis_review_schema,
+    project_analysis_review,
+)
+from app.services.insight_generation import INSIGHT_PROMPT_VERSION, generate_candidates
+from scripts.analysis_evaluation_profile import expected_review_profile
 from scripts.evaluate_ai import _atomic_write, evaluation_lock
 from scripts.evaluate_review import BUDGET_FILE, document_catalog, fingerprint, load_case
 from scripts.live_budget import BudgetedGenerationProvider, RequestBudget
@@ -86,6 +94,11 @@ def run(
     directory = settings.local_storage_dir / "demo"
     path = directory / f"insight-experiment-{run_id}.json"
     budget = RequestBudget(directory / BUDGET_FILE, limit=100)
+    generation_profile = {
+        "model": settings.openai_chat_model,
+        "reasoning_effort": "low",
+        "prompt_version": INSIGHT_PROMPT_VERSION,
+    }
     with evaluation_lock(directory):
         state = json.loads(path.read_text()) if path.exists() else {"cases": {}}
         engine = create_engine(settings.database_url, hide_parameters=True)
@@ -111,11 +124,18 @@ def run(
                 if existing:
                     if existing["binding"] != binding:
                         raise ValueError("FROZEN_INPUT_CHANGED")
+                    if existing.get("review_profile") != expected_review_profile(settings):
+                        raise ValueError("INSIGHT_REVIEW_RECIPE_CHANGED")
+                    if not audit_only and existing.get("generation_profile") != generation_profile:
+                        raise ValueError("INSIGHT_GENERATION_RECIPE_CHANGED")
                     continue
                 record: dict[str, Any] = {
                     "binding": binding,
                     "summary": summary,
                     "status": "started",
+                    "review_prompt_version": ANALYSIS_REVIEW_PROMPT_VERSION,
+                    "review_profile": expected_review_profile(settings),
+                    "insight_projection_version": INSIGHT_VALUE_PROJECTION_VERSION,
                     "catalog": {
                         q: {"source_id": str(ref.source_id), "quote": ref.quote}
                         for q, ref in catalog.items()
@@ -125,6 +145,9 @@ def run(
                     record["generation"] = original_case["generation"]
                     record["generation_source"] = key
                     record["generation_new_calls"] = 0
+                    record["generation_profile"] = original_case.get("generation_profile")
+                else:
+                    record["generation_profile"] = generation_profile
                 state["cases"][case_key] = record
                 _atomic_write(path, json.dumps(state, ensure_ascii=False, indent=2).encode())
                 try:
@@ -142,6 +165,7 @@ def run(
                             lambda: settings.openai_generation_timeout_seconds,
                         )
                         record["generation"] = generated.result.model_dump(mode="json")
+                        record["generation_model"] = generated.model
                         record["generation_usage"] = [
                             generated.input_tokens,
                             generated.output_tokens,
@@ -149,26 +173,34 @@ def run(
                         _atomic_write(
                             path, json.dumps(state, ensure_ascii=False, indent=2).encode()
                         )
-                    packet = prepare_review(
+                    packet = prepare_analysis_review(
                         {"summary": summary, "insights": record["generation"]["insights"]}, catalog
                     )
                     audit_provider = BudgetedGenerationProvider(
-                        OpenAIGenerationProvider(settings, reasoning_effort="low"),
+                        OpenAIGenerationProvider(
+                            settings,
+                            model=settings.openai_analysis_review_model,
+                            reasoning_effort=settings.ANALYSIS_REVIEW_REASONING_EFFORT,
+                        ),
                         budget,
                         f"insightaudit.{key}",
-                        profile="low",
+                        profile=(
+                            f"{settings.openai_analysis_review_model}:"
+                            f"{settings.ANALYSIS_REVIEW_REASONING_EFFORT}"
+                        ),
                     )
                     audited = audit_provider.generate(
-                        schema=ReviewOutput,
-                        system=REVIEW_SYSTEM,
+                        schema=analysis_review_schema(packet),
+                        system=ANALYSIS_REVIEW_SYSTEM,
                         content=packet.content,
                         max_output_tokens=4096,
                         timeout_seconds=settings.openai_generation_timeout_seconds,
                     )
-                    projection = project_review(packet, audited.result)
+                    projection = project_analysis_review(packet, audited.result)
                     record.update(
                         status="completed",
                         review=audited.result.model_dump(mode="json"),
+                        review_model=audited.model,
                         payload=projection.payload,
                         scope_complete=projection.scope_complete,
                         dropped_claim_ids=projection.dropped_claim_ids,

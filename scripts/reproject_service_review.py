@@ -16,7 +16,12 @@ from app.core.config import get_settings
 from app.db.models import ChatTurn
 from app.domain.conversation import Evidence
 from app.services.chat_context import answer_quote_catalog
-from app.services.chat_review import ChatReviewOutput, compact_chat_packet
+from app.services.chat_review import (
+    CHAT_REVIEW_PROMPT_VERSION,
+    ChatReviewOutput,
+    LegacyChatReviewOutput,
+    compact_chat_packet,
+)
 from app.services.evidence_review import PROJECTION_VERSION, prepare_review
 from app.services.grounding import AnswerOutput, validate_answer
 from scripts.evaluate_ai import _atomic_write
@@ -46,11 +51,18 @@ def _stored_audit_record(
         packet = compact_chat_packet(packet)
     if hashlib.sha256(packet.content.encode()).hexdigest() != metadata["request_sha256"]:
         raise ValueError("SAVED_REVIEW_CONTEXT_CHANGED")
+    schema = (
+        ChatReviewOutput.model_json_schema()
+        if metadata.get("prompt_version") == CHAT_REVIEW_PROMPT_VERSION
+        or "required_aspects" in metadata["review"]
+        else LegacyChatReviewOutput.model_json_schema()
+        if "unanswered_parts" in metadata["review"]
+        else {}
+    )
     request = {
         "content": packet.content,
-        "schema": ChatReviewOutput.model_json_schema()
-        if "unanswered_parts" in metadata["review"]
-        else {},
+        "schema": schema,
+        "prompt_version": metadata.get("prompt_version"),
     }
     return {
         "draft": draft,

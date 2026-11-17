@@ -1,6 +1,6 @@
 """Opt-in paid generation regression on frozen retrieval/history, not API E2E.
 
-Every paid draft and audit uses the shared durable100-request budget. Completed,
+Every paid source stage or legacy draft/audit uses the shared durable100-request budget. Completed,
 failed and interrupted cases are never retried within a run; select a new run ID
 explicitly for new work. No embeddings, planner calls or business-state writes.
 """
@@ -42,6 +42,7 @@ from app.services.chat_context import (
     AnswerSelectionOutput,
     ExhaustiveSelectionOutput,
     _evidence_json,
+    answer_quote_catalog,
     exhaustive_selection_to_answer,
     resolve_answer_selection,
 )
@@ -49,6 +50,11 @@ from app.services.chat_review import CHAT_REVIEW_PROMPT_VERSION
 from app.services.conversations import TurnStore
 from app.services.evidence_review import PROJECTION_VERSION
 from app.services.grounding import INSUFFICIENT_ANSWER, GroundedAnswer, validate_answer
+from app.services.source_answer import (
+    SOURCE_COMPOSITION_VERSION,
+    SOURCE_SELECTION_VERSION,
+    prepare_selection_packet,
+)
 from scripts.evaluate_ai import (
     _atomic_write,
     automatic_checks,
@@ -71,7 +77,7 @@ class FrozenStore:
 
     async def before_call(self, reservation: TurnReservation) -> float:
         self.calls += 1
-        if self.calls > 2:
+        if self.calls > 3:
             raise ValueError("FROZEN_CASE_CALL_LIMIT")
         return max(0.001, (reservation.deadline_at - datetime.now(UTC)).total_seconds())
 
@@ -142,7 +148,7 @@ async def generate_case(
     generator: AsyncGenerationProvider,
     reviewer: AsyncGenerationProvider,
 ) -> tuple[GroundedAnswer, dict[str, Any]]:
-    """Run current selection→source binding→production audit→actual renderer."""
+    """Run the current factual source flow or the unchanged legacy route."""
     if not evidence:
         return GroundedAnswer(INSUFFICIENT_ANSWER, "insufficient", []), {
             "audit_skipped": "no_evidence"
@@ -156,8 +162,18 @@ async def generate_case(
         generator,
         cast(AsyncEmbeddingProvider, None),
         reviewer=reviewer,
+        answerer=generator,
+        source_answerer=generator,
     )
     complete_scope = bool(payload["complete_scope"])
+    if payload["intent"] == "factual":
+        async with asyncio.timeout(settings.chat_timeout_seconds):
+            return await processor._source_answer(
+                reservation,
+                evidence,
+                resolved_query=payload.get("retrieval_query"),
+                complete_scope=complete_scope,
+            )
     extractive = payload["intent"] == "exhaustive" and not complete_scope
     request = {**payload, "evidence": _evidence_json(evidence)}
     content = json.dumps(request, ensure_ascii=False, separators=(",", ":"))
@@ -174,6 +190,7 @@ async def generate_case(
             settings.chat_max_output_tokens,
             "chat.answer",
             settings.openai_generation_timeout_seconds,
+            provider=processor.answerer,
         )
         selection = (
             exhaustive_selection_to_answer(
@@ -204,6 +221,10 @@ def recipe(settings: Settings) -> dict[str, Any]:
         "projection": PROJECTION_VERSION,
         "quote_catalog": QUOTE_CATALOG_VERSION,
         "model": settings.openai_chat_model,
+        "source_answer_model": settings.openai_source_answer_model,
+        "source_answer_reasoning_effort": "low",
+        "source_selection": SOURCE_SELECTION_VERSION,
+        "source_composition": SOURCE_COMPOSITION_VERSION,
         "configuration": settings.chat_configuration,
     }
 
@@ -241,7 +262,11 @@ async def run(source: Path, run_id: str, cases: Sequence[EvaluationCase]) -> dic
                     turn = database.get(ChatTurn, UUID(turn_id))
                     if turn is None:
                         raise ValueError("FROZEN_TURN_UNAVAILABLE")
-                    payload = turn.context_snapshot["payload"]
+                    payload = dict(turn.context_snapshot["payload"])
+                    if payload["intent"] == "factual":
+                        if not turn.retrieval_query:
+                            raise ValueError("FROZEN_QUERY_UNAVAILABLE")
+                        payload["retrieval_query"] = turn.retrieval_query
                     if payload["question"] != case.question:
                         raise ValueError("FROZEN_QUESTION_CHANGED")
                     evidence = saved_evidence(database, turn_id)
@@ -262,13 +287,23 @@ async def run(source: Path, run_id: str, cases: Sequence[EvaluationCase]) -> dic
                 }
                 state["cases"][case.id] = record
                 save()
+                factual = payload["intent"] == "factual"
+                effort = "low" if factual else settings.openai_answer_reasoning_effort
+                model = (
+                    settings.openai_source_answer_model if factual else settings.openai_chat_model
+                )
                 generator = RecordingProvider(
                     AsyncBudgetedGenerationProvider(
-                        AsyncOpenAIGenerationProvider(settings), budget, f"frozen.{case.id}.draft"
+                        AsyncOpenAIGenerationProvider(
+                            settings, reasoning_effort=effort, model=model
+                        ),
+                        budget,
+                        f"frozen.{case.id}.source_answer" if factual else f"frozen.{case.id}.draft",
+                        profile=f"{model}:{effort}" if factual else effort,
                     ),
                     record,
                     save,
-                    "draft",
+                    "source_answer" if factual else "draft",
                 )
                 reviewer = RecordingProvider(
                     AsyncBudgetedGenerationProvider(
@@ -352,13 +387,31 @@ def check_only(source: Path, cases: Sequence[EvaluationCase]) -> dict[str, Any]:
                 turn = database.get(ChatTurn, UUID(turn_id))
                 if turn is None:
                     raise ValueError("FROZEN_TURN_UNAVAILABLE")
-                payload = turn.context_snapshot["payload"]
+                payload = dict(turn.context_snapshot["payload"])
+                if payload["intent"] == "factual":
+                    if not turn.retrieval_query:
+                        raise ValueError("FROZEN_QUERY_UNAVAILABLE")
+                    payload["retrieval_query"] = turn.retrieval_query
                 evidence = saved_evidence(database, turn_id)
                 if payload["question"] != case.question or any(
                     str(e.document_id) != original["document_id"] for e in evidence
                 ):
                     raise ValueError("FROZEN_CASE_BINDING_CHANGED")
                 extractive = payload["intent"] == "exhaustive" and not payload["complete_scope"]
+                if payload["intent"] == "factual":
+                    packet = prepare_selection_packet(
+                        payload["question"],
+                        payload.get("retrieval_query"),
+                        answer_quote_catalog(evidence),
+                        settings,
+                    )
+                    results[case.id] = {
+                        "intent": "factual",
+                        "sources": len(evidence),
+                        "input_tokens": packet.input_tokens,
+                        "maximum_paid_calls": 3 if evidence else 0,
+                    }
+                    continue
                 content = json.dumps(
                     {**payload, "evidence": _evidence_json(evidence)},
                     ensure_ascii=False,

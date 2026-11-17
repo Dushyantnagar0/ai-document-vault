@@ -4,17 +4,20 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
-from unittest.mock import AsyncMock
+from typing import Any, Literal, cast
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
 
+from app.core.config import Settings
 from app.domain.conversation import Replay, TurnReservation
 from app.services.chat import ChatProcessor
+from app.services.chat_review import CHAT_REVIEW_PROMPT_VERSION
 from app.services.conversations import TurnStore
+from scripts import evaluate_service_review
 from scripts.evaluate_service_review import execute_case, initialize_run, main
-from scripts.live_budget import RequestBudget
+from scripts.live_budget import AsyncBudgetedGenerationProvider, RequestBudget
 
 
 def reservation(question: str) -> TurnReservation:
@@ -104,3 +107,67 @@ def test_cli_requires_live_before_loading_key(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(SystemExit) as error:
         main()
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize("effort", ["none", "low"])
+async def test_service_run_separates_planner_answer_and_review_profiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, effort: Literal["none", "low"]
+) -> None:
+    configured = Settings(
+        _env_file=None,
+        openai_api_key="test-placeholder",
+        local_storage_dir=tmp_path,
+        openai_answer_reasoning_effort=effort,
+        openai_review_reasoning_effort="none",
+    )
+    engine = Mock(dispose=AsyncMock())
+    artifact = tmp_path / "demo" / "service-review-effort-bound.json"
+
+    async def preflight(*args: Any) -> None:
+        saved = json.loads(artifact.read_text())
+        assert saved["recipe"]["configuration"]["openai_answer_reasoning_effort"] == effort
+        assert saved["recipe"]["review_prompt"] == CHAT_REVIEW_PROMPT_VERSION
+        assert "saved_analysis_prompt" not in saved["recipe"]
+
+    observed: list[ChatProcessor] = []
+
+    async def execute(
+        store: TurnStore,
+        processor: ChatProcessor,
+        session_id: Any,
+        record: dict[str, Any],
+        budget: RequestBudget,
+    ) -> Replay:
+        observed.append(processor)
+        record.update(status="completed", turn_id=str(uuid4()))
+        return Replay(200, {"evidence_status": "insufficient", "citations": []})
+
+    monkeypatch.setattr(evaluate_service_review, "api_engine", lambda *args: engine)
+    monkeypatch.setattr(evaluate_service_review, "preflight_and_create", preflight)
+    monkeypatch.setattr(evaluate_service_review, "execute_case", execute)
+    monkeypatch.setattr(evaluate_service_review, "capture_persisted", AsyncMock())
+    result = await evaluate_service_review.run(configured, "effort-bound", uuid4(), "databases")
+    assert len(observed) == 3
+    processor = observed[0]
+    planner = cast(AsyncBudgetedGenerationProvider, processor.generator)
+    answerer = cast(AsyncBudgetedGenerationProvider, processor.answerer)
+    reviewer = cast(AsyncBudgetedGenerationProvider, processor.reviewer)
+    assert len({id(planner), id(answerer), id(reviewer)}) == 3
+    assert (planner.label, planner.profile, planner.delegate.reasoning_effort) == (
+        "service.planner",
+        "none",
+        "none",
+    )
+    assert (answerer.label, answerer.profile, answerer.delegate.reasoning_effort) == (
+        "service.answer",
+        effort,
+        effort,
+    )
+    assert (reviewer.label, reviewer.profile, reviewer.delegate.reasoning_effort) == (
+        "service.review",
+        "none",
+        "none",
+    )
+    assert result["used"] == 0
+    assert json.loads(artifact.read_text())["status"] == "completed"
+    engine.dispose.assert_awaited_once()

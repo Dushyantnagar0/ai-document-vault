@@ -103,7 +103,7 @@ def test_small_document_one_final_call_all_chunks_and_late_evidence() -> None:
     assert result.payload["summary"][0]["source_ids"] == [str(source[-1].id)]
     assert result.payload["summary"][0]["support_quotes"][0]["quote"] in source[-1].text
     assert result.payload["analysis_coverage"] == 1.0
-    assert result.prompt_version == result.payload["prompt_version"] == "analysis-v13"
+    assert result.prompt_version == result.payload["prompt_version"] == "analysis-v14"
     assert result.payload["usage"]["all_calls_reported_usage"] is True
     for chunk in source:
         assert str(chunk.id) not in call["content"]

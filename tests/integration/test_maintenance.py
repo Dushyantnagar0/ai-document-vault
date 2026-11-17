@@ -9,7 +9,7 @@ from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import func, insert, select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.orm import Session
@@ -231,6 +231,7 @@ async def test_file_and_telemetry_deletion_batches_are_bounded(
 ) -> None:
     monkeypatch.setattr(maintenance, "MAX_FILE_DELETIONS", 2)
     monkeypatch.setattr(maintenance, "MAX_PERFORMANCE_DELETIONS", 2)
+    monkeypatch.setattr(maintenance, "MAX_PERFORMANCE_BATCHES", 1)
     storage = LocalFileStorage(tmp_path)
     paths = [put(storage, original=True)[1] for _ in range(5)]
     for path in paths:
@@ -249,10 +250,64 @@ async def test_file_and_telemetry_deletion_batches_are_bounded(
         )
     result = await run_maintenance(retrieval_engine, storage, now)
     assert result.performance_samples_deleted == result.originals_deleted == 2
+    assert result.performance_backlog_remaining is True
     assert result.file_limit_reached is True
     assert sum(path.exists() for path in paths) == 3
     with Session(claim_database.engine) as database:
         assert database.scalar(select(func.count()).select_from(PerformanceSample)) == 3
+
+
+@pytest.mark.parametrize("expire_time_budget", [False, True])
+async def test_telemetry_drains_multiple_batches_or_reports_remaining_backlog(
+    retrieval_engine: AsyncEngine,
+    claim_database: ClaimDatabase,
+    tmp_path: Path,
+    now: datetime,
+    monkeypatch: pytest.MonkeyPatch,
+    expire_time_budget: bool,
+) -> None:
+    # One hour at one sample/second must not accumulate 2,600 expired rows per
+    # sweep. The time budget still interrupts between committed transactions.
+    with Session(claim_database.engine) as database, database.begin():
+        database.execute(
+            insert(PerformanceSample),
+            [
+                {
+                    "recorded_at": now - timedelta(days=8),
+                    "operation": "retention.fixture",
+                    "duration_ms": 1,
+                    "outcome": "succeeded",
+                }
+                for _ in range(3600)
+            ]
+            + [
+                {
+                    "recorded_at": now,
+                    "operation": "retention.current",
+                    "duration_ms": 1,
+                    "outcome": "succeeded",
+                }
+            ],
+        )
+    if expire_time_budget:
+        ticks = iter([0.0, 0.0, 6.0])
+        monkeypatch.setattr(maintenance, "monotonic", lambda: next(ticks))
+    result = await run_maintenance(retrieval_engine, LocalFileStorage(tmp_path), now)
+    expected = 1000 if expire_time_budget else 3600
+    assert result.performance_samples_deleted == expected
+    assert result.performance_backlog_remaining is expire_time_budget
+    with Session(claim_database.engine) as database:
+        assert database.scalar(select(func.count()).select_from(PerformanceSample)) == (
+            3601 - expected
+        )
+        assert (
+            database.scalar(
+                select(func.count())
+                .select_from(PerformanceSample)
+                .where(PerformanceSample.recorded_at == now)
+            )
+            == 1
+        )
 
 
 async def test_fresh_reference_committed_after_preload_preserves_original(
@@ -278,6 +333,39 @@ async def test_fresh_reference_committed_after_preload_preserves_original(
     result = await run_maintenance(retrieval_engine, storage, now)
     assert result.originals_deleted == 0 and result.referenced_skipped == 1
     assert path.exists()
+
+
+async def test_locked_expired_samples_are_skipped_and_reported_until_next_sweep(
+    retrieval_engine: AsyncEngine,
+    claim_database: ClaimDatabase,
+    tmp_path: Path,
+    now: datetime,
+) -> None:
+    identifiers = [uuid4(), uuid4()]
+    with Session(claim_database.engine) as database, database.begin():
+        database.add_all(
+            PerformanceSample(
+                id=identifier,
+                recorded_at=now - timedelta(days=8),
+                operation="locked.retention",
+                duration_ms=1,
+                outcome="succeeded",
+            )
+            for identifier in identifiers
+        )
+    storage = LocalFileStorage(tmp_path)
+    with Session(claim_database.engine) as lock_holder, lock_holder.begin():
+        lock_holder.scalar(
+            select(PerformanceSample)
+            .where(PerformanceSample.id == identifiers[0])
+            .with_for_update()
+        )
+        result = await asyncio.wait_for(run_maintenance(retrieval_engine, storage, now), timeout=3)
+        assert result.performance_samples_deleted == 1
+        assert result.performance_backlog_remaining is True
+    retried = await run_maintenance(retrieval_engine, storage, now)
+    assert retried.performance_samples_deleted == 1
+    assert retried.performance_backlog_remaining is False
 
 
 async def test_database_unavailable_means_no_file_deletion(tmp_path: Path, now: datetime) -> None:

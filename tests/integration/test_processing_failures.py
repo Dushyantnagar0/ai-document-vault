@@ -122,7 +122,9 @@ def test_unusable_provider_vector_fails_before_analysis_and_atomic_publication(
         )
 
 
-@pytest.mark.parametrize("schema_name,reserved", [("InsightCandidates", 3), ("ReviewOutput", 5)])
+@pytest.mark.parametrize(
+    "schema_name,reserved", [("InsightCandidates", 3), ("AnalysisReviewOutput", 5)]
+)
 def test_failed_final_quality_stage_cannot_publish_chunks_or_analysis(
     claim_database: ClaimDatabase,
     pipeline: tuple[UUID, Settings],
@@ -236,6 +238,7 @@ def pipeline(
     class Generation:
         def __init__(self, settings: Settings, **options: Any) -> None:
             self.settings = settings
+            self.model = options.get("model", settings.openai_chat_model)
 
         def generate(self, **kwargs: Any) -> Generated[Any]:
             content = json.loads(kwargs["content"])
@@ -247,9 +250,10 @@ def pipeline(
                 }
             elif kwargs["schema"].__name__ == "InsightCandidates":
                 payload = {"insights": []}
-            elif kwargs["schema"].__name__ == "ReviewOutput":
+            elif kwargs["schema"].__name__ == "AnalysisReviewOutput":
                 payload = {
                     "required_qualifications": [],
+                    "insight_assessments": [],
                     "decisions": [
                         {
                             "claim_id": claim["claim_id"],
@@ -278,9 +282,7 @@ def pipeline(
                     ],
                     "insights": [],
                 }
-            return Generated(
-                kwargs["schema"].model_validate(payload), self.settings.openai_chat_model, 20, 20
-            )
+            return Generated(kwargs["schema"].model_validate(payload), self.model, 20, 20)
 
     monkeypatch.setattr("app.adapters.openai.OpenAIEmbeddingProvider", Embeddings)
     monkeypatch.setattr("app.adapters.openai.OpenAIGenerationProvider", Generation)
@@ -359,17 +361,22 @@ def test_publication_database_failure_rolls_back_and_only_known_transients_retry
         assert attempt.error == document.error
 
 
-def test_real_parser_soft_interruption_becomes_bounded_retry_without_provider_calls(
+@pytest.mark.parametrize(
+    "interrupt_target",
+    ["app.adapters.extraction.pymupdf.open", "app.services.chunking._chunk_document"],
+)
+def test_parser_or_chunker_soft_interruption_becomes_bounded_retry_without_provider_calls(
     claim_database: ClaimDatabase,
     pipeline: tuple[UUID, Settings],
     monkeypatch: pytest.MonkeyPatch,
+    interrupt_target: str,
 ) -> None:
     identifier, configured = pipeline
 
     def interrupted(*args: Any, **kwargs: Any) -> None:
         raise SoftTimeLimitExceeded()
 
-    monkeypatch.setattr("app.adapters.extraction.pymupdf.open", interrupted)
+    monkeypatch.setattr(interrupt_target, interrupted)
     ingestion.process_document(claim_database.engine, identifier, configured)
     with Session(claim_database.engine) as database:
         document = database.get(Document, identifier)
@@ -377,6 +384,8 @@ def test_real_parser_soft_interruption_becomes_bounded_retry_without_provider_ca
         assert document.status == "PENDING" and document.error["code"] == "PROCESSING_INTERRUPTED"
         assert document.ai_calls_reserved == 0
         assert document.published_attempt_id is None
+        attempt = database.get(ProcessingAttempt, document.current_attempt_id)
+        assert attempt is not None and attempt.outcome == "RETRY"
 
 
 def test_soft_limit_during_real_telemetry_insert_is_not_swallowed(

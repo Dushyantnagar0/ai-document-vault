@@ -78,6 +78,10 @@ def test_provider_key_is_required_and_nonblank(key: str | None) -> None:
         ({"storage_backend": "s3"}, "storage_backend"),
         ({"vector_backend": "pinecone"}, "vector_backend"),
         ({"openai_chat_model": "unknown-model"}, "chat model metadata"),
+        ({"openai_source_answer_model": "unknown-model"}, "source-answer model metadata"),
+        ({"openai_source_answer_model": Settings.CHAT_MODEL}, "source-answer model metadata"),
+        ({"openai_analysis_review_model": "unknown-model"}, "analysis-review model metadata"),
+        ({"openai_analysis_review_model": Settings.CHAT_MODEL}, "analysis-review model metadata"),
         ({"openai_embedding_model": "text-embedding-3-large"}, "embedding model metadata"),
         ({"openai_embedding_dimensions": 512}, "vector\\(1536\\)"),
         ({"max_upload_bytes": 0}, "max_upload_bytes"),
@@ -107,6 +111,7 @@ def test_provider_key_is_required_and_nonblank(key: str | None) -> None:
         ({"insight_max_output_tokens": 128001}, "model output capacity"),
         ({"insight_max_visible_tokens": 3073}, "Visible insight budget"),
         ({"openai_review_reasoning_effort": "high"}, "openai_review_reasoning_effort"),
+        ({"openai_answer_reasoning_effort": "high"}, "openai_answer_reasoning_effort"),
         ({"analysis_group_max_tokens": 270977}, "model input capacity"),
         ({"analysis_max_output_tokens": 12000}, "reduction output"),
         ({"processing_deadline_seconds": 29}, "Provider timeouts"),
@@ -147,6 +152,64 @@ def test_review_recipe_is_persistable_and_visible_insight_limit_is_independent(
     assert configured.chat_configuration["openai_review_reasoning_effort"] == "none"
     assert configured.insight_max_visible_tokens == 700
     assert configured.insight_max_output_tokens == 4096
+
+
+@pytest.mark.parametrize("effort", ["none", "low"])
+def test_answer_reasoning_recipe_is_independent_and_persistable(
+    settings: Callable[..., Settings], effort: str
+) -> None:
+    configured = settings(openai_answer_reasoning_effort=effort)
+    assert configured.chat_configuration["openai_answer_reasoning_effort"] == effort
+    assert configured.openai_review_reasoning_effort == "low"
+    assert configured.chat_max_output_tokens == 1200
+
+
+def test_answer_reasoning_accepts_explicit_environment_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_ANSWER_REASONING_EFFORT", "none")
+    configured = Settings(_env_file=None, openai_api_key="test-placeholder")
+    assert configured.chat_configuration["openai_answer_reasoning_effort"] == "none"
+
+
+def test_source_answer_model_recipe_is_isolated_and_fixed_low(
+    settings: Callable[..., Settings], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_SOURCE_ANSWER_MODEL", "gpt-6.1-sol")
+    configured = settings(
+        openai_answer_reasoning_effort="none", openai_review_reasoning_effort="none"
+    )
+    assert configured.openai_source_answer_model == Settings.SOURCE_ANSWER_MODEL == "gpt-6.1-sol"
+    assert configured.chat_configuration["openai_source_answer_model"] == "gpt-6.1-sol"
+    assert configured.chat_configuration["openai_source_answer_reasoning_effort"] == "low"
+    assert configured.openai_chat_model == Settings.CHAT_MODEL
+    assert configured.openai_answer_reasoning_effort == "none"
+    assert configured.openai_review_reasoning_effort == "none"
+    assert configured.chat_max_output_tokens == 1200
+    assert configured.chat_prompt_max_tokens == 12000
+
+
+def test_analysis_review_model_is_isolated_from_mini_roles_and_chat_recipe(
+    settings: Callable[..., Settings], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    baseline = settings(
+        openai_answer_reasoning_effort="none", openai_review_reasoning_effort="none"
+    )
+    monkeypatch.setenv("OPENAI_ANALYSIS_REVIEW_MODEL", "gpt-6.1-sol")
+    configured = settings(
+        openai_answer_reasoning_effort="none", openai_review_reasoning_effort="none"
+    )
+    assert (
+        configured.openai_analysis_review_model == Settings.ANALYSIS_REVIEW_MODEL == "gpt-6.1-sol"
+    )
+    assert configured.ANALYSIS_REVIEW_REASONING_EFFORT == "low"
+    assert configured.openai_chat_model == Settings.CHAT_MODEL
+    assert configured.openai_source_answer_model == Settings.SOURCE_ANSWER_MODEL
+    assert configured.openai_answer_reasoning_effort == "none"
+    assert configured.openai_review_reasoning_effort == "none"
+    assert configured.chat_configuration == baseline.chat_configuration
+    assert "openai_analysis_review_model" not in configured.chat_configuration
+    assert "openai_analysis_review_reasoning_effort" not in configured.chat_configuration
 
 
 def test_exact_model_input_and_combined_context_bounds(
@@ -204,6 +267,7 @@ def test_credentials_do_not_leak_from_settings_or_invalid_input_diagnostics(
         {"redis_url": f"http://:{sentinel}@redis/0"},
         {"storage_backend": sentinel},
         {"openai_chat_model": sentinel},
+        {"openai_analysis_review_model": sentinel},
     ):
         with pytest.raises(ConfigurationError) as captured:
             settings(**overrides)

@@ -4,6 +4,8 @@ name: vault-test
 x-test-environment: &test-environment
   OPENAI_API_KEY: "test-placeholder-never-a-real-key"
   OPENAI_CHAT_MODEL: "gpt-5.4-mini-2026-03-17"
+  OPENAI_SOURCE_ANSWER_MODEL: "gpt-6.1-sol"
+  OPENAI_ANALYSIS_REVIEW_MODEL: "gpt-6.1-sol"
   OPENAI_EMBEDDING_MODEL: "text-embedding-3-small"
   OPENAI_EMBEDDING_DIMENSIONS: "1536"
   POSTGRES_DB: "vault_test"
@@ -44,6 +46,7 @@ x-test-environment: &test-environment
   RETRIEVAL_MAX_TOKENS: "6400"
   CHAT_PROMPT_MAX_TOKENS: "12000"
   CHAT_MAX_OUTPUT_TOKENS: "1200"
+  OPENAI_ANSWER_REASONING_EFFORT: "low"
   OPENAI_EMBEDDING_TIMEOUT_SECONDS: "15"
   OPENAI_GENERATION_TIMEOUT_SECONDS: "30"
   CHAT_TIMEOUT_SECONDS: "90"

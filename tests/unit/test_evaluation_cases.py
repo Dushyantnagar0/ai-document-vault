@@ -899,7 +899,11 @@ def test_actual_snapshot_reconstructs_exact_supplied_text_and_scores_retrieval(
     assert observed["published_selected_text"] == row.text
     assert automatic_checks(BY_ID["A1"], body, observed)["retrieval_pass"] is True
     assert observed["membership_valid"] is True
-    assert observed["versions"] == {**turn.versions, "saved_analysis_prompt": None}
+    assert observed["versions"] == {
+        **turn.versions,
+        "saved_analysis_prompt": None,
+        "saved_analysis_review": {},
+    }
     evaluation.client.request.assert_not_called()
     database.commit.assert_not_called()
 
@@ -961,6 +965,7 @@ def test_overview_snapshot_records_only_matching_published_analysis_version(
                 uuid4() if provenance == "other_attempt" else document.published_attempt_id
             ),
             prompt_version="analysis-historical-version",
+            payload={},
         )
     )
     database.get.side_effect = lambda model, *args, **kwargs: (

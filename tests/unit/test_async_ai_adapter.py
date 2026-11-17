@@ -199,6 +199,52 @@ async def test_native_async_generation_strict_schema_snapshot_and_usage(
     assert result.input_tokens == 30 and result.output_tokens == 8
 
 
+@pytest.mark.parametrize("returned_model", [Settings.SOURCE_ANSWER_MODEL, Settings.CHAT_MODEL])
+async def test_source_model_override_uses_fixed_low_and_validates_actual_returned_model(
+    wire: Wire, returned_model: str
+) -> None:
+    requests: list[httpx2.Request] = []
+
+    async def respond(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        return httpx2.Response(200, json=completion(model=returned_model))
+
+    wire.generation(respond)
+    provider = adapter.AsyncOpenAIGenerationProvider(
+        settings(), model=Settings.SOURCE_ANSWER_MODEL, reasoning_effort="low"
+    )
+    arguments = {
+        "schema": Output,
+        "system": "Source only.",
+        "content": "evidence",
+        "max_output_tokens": 99,
+        "timeout_seconds": 4,
+    }
+    if returned_model == Settings.SOURCE_ANSWER_MODEL:
+        result = await provider.generate(**arguments)
+        assert result.model == returned_model and result.result.answer == "source backed"
+    else:
+        with pytest.raises(ProcessingError) as failure:
+            await provider.generate(**arguments)
+        assert failure.value.code == "ai_model_mismatch"
+    assert len(requests) == 1
+    body = json.loads(requests[0].content)
+    assert body["model"] == "gpt-6.1-sol" and body["reasoning_effort"] == "low"
+    assert body["response_format"]["json_schema"]["strict"] is True
+    assert wire.options[0]["max_retries"] == 0
+    assert provider.settings.openai_chat_model == Settings.CHAT_MODEL
+
+
+async def test_source_model_rejects_none_and_unreviewed_override_before_provider_work() -> None:
+    with pytest.raises(ValueError, match="reasoning effort"):
+        adapter.AsyncOpenAIGenerationProvider(settings(), model=Settings.SOURCE_ANSWER_MODEL)
+    with pytest.raises(ValueError, match="reviewed model"):
+        adapter.AsyncOpenAIGenerationProvider(
+            settings(), model="unreviewed-model", reasoning_effort="low"
+        )
+    assert adapter.AsyncOpenAIGenerationProvider(settings()).model == Settings.CHAT_MODEL
+
+
 @pytest.mark.parametrize("kind", ["embedding", "generation"])
 @pytest.mark.parametrize("quota", [False, True])
 async def test_async_429_one_attempt_classifies_quota_and_retry_after(

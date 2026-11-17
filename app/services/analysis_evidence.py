@@ -11,6 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.domain.documents import AIFailureDetails, ProcessingError
 
 MAX_QUOTE_CHARACTERS = 300
+# Generation stays at eight summary blocks. Source-review corrections may split
+# those blocks or append literal qualifications without generating more prose.
+MAX_FINAL_SUMMARY_BLOCKS = 16
 QUOTE_CATALOG_VERSION = "literal-sentences-v2"
 
 

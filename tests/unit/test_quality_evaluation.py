@@ -14,6 +14,7 @@ from app.adapters.extraction import DOCX_MEDIA_TYPE, extractor_for
 from app.core.config import Settings
 from app.prompts.analysis import ANALYSIS_PROMPT_VERSION
 from scripts import evaluate_quality as quality
+from scripts.analysis_evaluation_profile import expected_review_profile
 from scripts.evaluate_ai import EvaluationFailure, expected_versions
 from scripts.evaluation_fixtures import CASES, SUITE_VERSION
 from scripts.quality_fixtures import (
@@ -144,7 +145,7 @@ def test_actual_base_evaluation_persists_quality_id_then_replays_without_new_tur
         evaluation,
         "snapshot",
         lambda *args: {
-            "versions": expected_versions(configured(tmp_path)),
+            "versions": expected_versions(configured(tmp_path), intent="factual"),
             "planner_intent": "factual",
             "membership_valid": True,
             "selected_membership_valid": True,
@@ -194,6 +195,7 @@ def completed_state(tmp_path: Path) -> dict[str, Any]:
         },
         "analysis": {
             "prompt_version": ANALYSIS_PROMPT_VERSION,
+            "evidence_review": expected_review_profile(),
             "summary": [{"text": summary, "source_ids": [source_id]}],
             "insights": [
                 {
@@ -219,7 +221,7 @@ def completed_state(tmp_path: Path) -> dict[str, Any]:
             "status": "COMPLETED",
             "revision": 1,
             "client_request_id": str(quality_request_id(case.id)),
-            "versions": expected_versions(configured(tmp_path)),
+            "versions": expected_versions(configured(tmp_path), intent=EXPECTED_INTENTS[case.id]),
             "response": {
                 "answer": answers[case.id],
                 "evidence_status": "answered",
@@ -472,6 +474,40 @@ def test_new_chat_revision_with_unchanged_analysis_keeps_document_and_analysis(
     assert "document_history" not in evaluation.state
     assert evaluation.state["analysis"]["prompt_version"] == ANALYSIS_PROMPT_VERSION
     evaluation.client.request.assert_not_called()
+
+
+@pytest.mark.parametrize("field", ["prompt_version", "model", "reasoning_effort"])
+def test_review_only_change_is_stale_and_archives_analysis_before_explicit_revision(
+    tmp_path: Path, field: str
+) -> None:
+    evaluation = completed_runner(tmp_path)
+    evaluation.state["analysis"]["evidence_review"][field] = "historical-value"
+    evaluation.save()
+    before = json.loads(evaluation.path.read_text())
+    assert f"analysis_review_{field}_changed" in quality._stale(evaluation.state)
+    with pytest.raises(EvaluationFailure, match="SOURCE_REVIEW_STALE_VERSIONS"):
+        quality.review_binding(evaluation.state)
+    with pytest.raises(EvaluationFailure, match="SAVED_ANALYSIS_STALE"):
+        evaluation.prepare_analysis_iteration()
+    assert json.loads(evaluation.path.read_text()) == before
+    evaluation.revision = 2
+    evaluation.prepare_analysis_iteration()
+    saved = json.loads(evaluation.path.read_text())
+    assert saved["analysis_history"][DOCUMENT_KEY][0]["analysis"] == before["analysis"]
+    assert saved["documents"][DOCUMENT_KEY]["reprocess_reason"] == "analysis_review_recipe_changed"
+    assert saved["documents"][DOCUMENT_KEY]["analysis_review"] == expected_review_profile()
+    assert saved["cases"] == {} and "analysis" not in saved
+    assert saved["source_reviews"] == before["source_reviews"]
+    evaluation.client.request.assert_not_called()
+
+
+def test_missing_review_provenance_is_not_filled_from_current_constants(tmp_path: Path) -> None:
+    state = completed_state(tmp_path)
+    del state["analysis"]["evidence_review"]
+    assert "analysis_review_model_missing" in quality._stale(state)
+    with pytest.raises(EvaluationFailure, match="SOURCE_REVIEW_STALE_VERSIONS"):
+        quality.review_binding(state)
+    assert "evidence_review" not in state["analysis"]
 
 
 def test_analysis_iteration_uncertain_upload_resumes_same_identity_and_bytes(

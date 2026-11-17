@@ -1,5 +1,6 @@
 """Production answer review with deterministic verdicts; no provider/network evidence."""
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -77,8 +78,12 @@ async def test_review_policy_restores_missing_rule_and_keeps_original_claims(
         return Generated(
             ChatReviewOutput.model_validate(
                 {
-                    "required_qualifications": [
-                        {"quote_ids": ["q2"], "conveyed_by_claim_ids": ["a1.1"]}
+                    "required_aspects": [
+                        {
+                            "aspect": "Retention clock after release",
+                            "quote_ids": ["q2"],
+                            "conveyed_by_claim_ids": ["a1.1"],
+                        }
                     ],
                     "decisions": [
                         {
@@ -111,7 +116,7 @@ async def test_review_policy_restores_missing_rule_and_keeps_original_claims(
     assert answer.answer.startswith("A legal hold blocks deletion.")
     assert "Release does not restart" in answer.answer
     assert metadata["force_qualification_quotes"] is False
-    assert metadata["qualification_policy"] == "retained_claim_source_bindings"
+    assert metadata["qualification_policy"] == "required_aspect_source_bindings"
     assert metadata["claims"][0]["id"] == "a1.1"
     assert metadata["quote_bindings"]["q2"]["quote"].startswith("Release")
     assert all(len(c["excerpt"]) <= 1200 for c in answer.citations)
@@ -178,8 +183,12 @@ async def test_invalid_review_retains_bounded_audit_without_returning_draft(
         return Generated(
             ChatReviewOutput.model_validate(
                 {
-                    "required_qualifications": [
-                        {"quote_ids": ["unknown-source"], "conveyed_by_claim_ids": []}
+                    "required_aspects": [
+                        {
+                            "aspect": "Retention clock after release",
+                            "quote_ids": ["unknown-source"],
+                            "conveyed_by_claim_ids": [],
+                        }
                     ],
                     "decisions": [
                         {
@@ -214,7 +223,7 @@ async def test_invalid_review_retains_bounded_audit_without_returning_draft(
     assert caught.value.code == "EVIDENCE_REVIEW_INVALID"
     assert record["projection_status"] == "failed"
     assert record["projection_error"]["reason"] == "invalid_qualification_selection"
-    assert record["review"]["required_qualifications"][0]["quote_ids"] == ["unknown-source"]
+    assert record["review"]["required_aspects"][0]["quote_ids"] == ["unknown-source"]
     assert record["claims"][0]["text"] == draft.blocks[0].text
     assert "q1" in record["quote_bindings"]
     assert "unknown-source" not in record["quote_bindings"]
@@ -234,8 +243,9 @@ async def test_review_repair_is_bounded_and_uses_unchanged_evidence(
         return Generated(
             ChatReviewOutput.model_validate(
                 {
-                    "required_qualifications": [
+                    "required_aspects": [
                         {
+                            "aspect": "Retention clock after release",
                             "quote_ids": ["unknown"] if len(calls) == 1 else ["q2"],
                             "conveyed_by_claim_ids": [],
                         }
@@ -297,7 +307,13 @@ async def test_review_can_correct_provisional_partial_without_overriding_source_
     async def generate(*args: Any, **kwargs: Any) -> Generated[ChatReviewOutput]:
         return Generated(
             ChatReviewOutput(
-                required_qualifications=[],
+                required_aspects=[
+                    {
+                        "aspect": "Deletion while a legal hold applies",
+                        "quote_ids": ["q1"],
+                        "conveyed_by_claim_ids": ["a1.1"],
+                    }
+                ],
                 decisions=[
                     {
                         "claim_id": "a1.1",
@@ -327,6 +343,78 @@ async def test_review_can_correct_provisional_partial_without_overriding_source_
     assert record["answerability"] == "answered"
 
 
+@pytest.mark.parametrize("complete_scope,expected", [(True, "answered"), (False, "partial")])
+async def test_irrelevant_primary_write_pruning_preserves_complete_fee_answer(
+    monkeypatch: pytest.MonkeyPatch, complete_scope: bool, expected: str
+) -> None:
+    processor, _, source = fixture()
+    evidence = (
+        replace(source[0], text="The fee is 480 credits."),
+        replace(source[0], id=UUID(int=9), text="The primary handles writes."),
+    )
+    draft = AnswerOutput(
+        evidence_status="answered",
+        blocks=[
+            FactualBlock.model_validate(
+                {
+                    "text": item.text,
+                    "source_ids": [item.id],
+                    "support_quotes": [{"source_id": item.id, "quote": item.text}],
+                }
+            )
+            for item in evidence
+        ],
+    )
+
+    async def generate(*args: Any, **kwargs: Any) -> Generated[ChatReviewOutput]:
+        return Generated(
+            ChatReviewOutput.model_validate(
+                {
+                    "required_aspects": [
+                        {
+                            "aspect": "The fee amount",
+                            "quote_ids": ["q1"],
+                            "conveyed_by_claim_ids": ["a1.1"],
+                        }
+                    ],
+                    "decisions": [
+                        {
+                            "claim_id": f"a{index}.1",
+                            "supported": True,
+                            "quote_ids": [f"q{index}"],
+                            "redundant_with": [],
+                        }
+                        for index in (1, 2)
+                    ],
+                    "scope_complete": True,
+                    "answerability": "answered",
+                    "unanswered_parts": [],
+                    "relevant_claim_ids": ["a1.1"],
+                }
+            ),
+            "test-model",
+            100,
+            50,
+        )
+
+    monkeypatch.setattr(processor, "_generate", generate)
+    answer, record = await processor._review_answer(
+        replace(reservation(), question="What is the fee?"),
+        draft,
+        evidence,
+        overview=False,
+        complete_scope=complete_scope,
+    )
+    assert answer.evidence_status == expected
+    assert answer.blocks[0].text == "The fee is 480 credits."
+    assert len(answer.blocks) == len(answer.citations) == 1
+    assert answer.citations[0]["source_id"] == str(evidence[0].id)
+    assert "primary" not in answer.answer
+    assert record["scope_complete"]
+    assert record["unanswered_parts"] == []
+    assert record["dropped_claim_ids"] == ["a2.1"]
+
+
 async def test_partial_missing_component_is_rendered_separately_from_factual_blocks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -336,7 +424,14 @@ async def test_partial_missing_component_is_rendered_separately_from_factual_blo
     async def generate(*args: Any, **kwargs: Any) -> Generated[ChatReviewOutput]:
         return Generated(
             ChatReviewOutput(
-                required_qualifications=[],
+                required_aspects=[
+                    {
+                        "aspect": "Deletion while a legal hold applies",
+                        "quote_ids": ["q1"],
+                        "conveyed_by_claim_ids": ["a1.1"],
+                    },
+                    {"aspect": missing, "quote_ids": [], "conveyed_by_claim_ids": []},
+                ],
                 decisions=[
                     {
                         "claim_id": "a1.1",
