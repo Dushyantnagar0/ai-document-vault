@@ -22,6 +22,7 @@ from app.services.analysis_review import (
     INSIGHT_VALUE_PROJECTION_VERSION,
 )
 from app.services.evidence_review import PROJECTION_VERSION
+from scripts.analysis_evaluation_profile import expected_review_profile
 from scripts.evaluate_ai import _atomic_write, evaluation_lock, validate_run_id
 from scripts.evaluate_quality import analysis_indicators
 from scripts.evaluate_review import BUDGET_FILE, fingerprint
@@ -76,12 +77,14 @@ def run(run_id: str, cases: list[str]) -> dict[str, Any]:
         "insight_projection": INSIGHT_VALUE_PROJECTION_VERSION,
         "quote_catalog": QUOTE_CATALOG_VERSION,
         "model": settings.openai_chat_model,
+        "review_profile": expected_review_profile(settings),
         "group_input": settings.analysis_group_max_tokens,
         "summary_output": settings.summary_max_output_tokens,
         "insight_output": settings.insight_max_output_tokens,
         "insight_visible": settings.insight_max_visible_tokens,
         "review_output": settings.evidence_review_max_output_tokens,
-        "review_effort": settings.openai_review_reasoning_effort,
+        "insight_effort": settings.openai_review_reasoning_effort,
+        "review_effort": settings.ANALYSIS_REVIEW_REASONING_EFFORT,
     }
     engine = create_engine(settings.database_url, hide_parameters=True)
     try:
@@ -141,16 +144,19 @@ def run(run_id: str, cases: list[str]) -> dict[str, Any]:
                     phase: str,
                     effort: Literal["none", "low"] = "none",
                     *,
+                    model: str = settings.openai_chat_model,
                     case_key: str = key,
                     case_record: dict[str, Any] = record,
                     save_record: Callable[[], None] = save,
                 ) -> RecordingProvider:
                     return RecordingProvider(
                         BudgetedGenerationProvider(
-                            OpenAIGenerationProvider(settings, reasoning_effort=effort),
+                            OpenAIGenerationProvider(
+                                settings, model=model, reasoning_effort=effort
+                            ),
                             budget,
                             f"analysis.{case_key}.{phase}",
-                            profile=effort,
+                            profile=f"{model}:{effort}",
                         ),
                         case_record,
                         save_record,
@@ -165,7 +171,11 @@ def run(run_id: str, cases: list[str]) -> dict[str, Any]:
                         insight_generator=provider(
                             "insights", settings.openai_review_reasoning_effort
                         ),
-                        reviewer=provider("review", settings.openai_review_reasoning_effort),
+                        reviewer=provider(
+                            "review",
+                            settings.ANALYSIS_REVIEW_REASONING_EFFORT,
+                            model=settings.openai_analysis_review_model,
+                        ),
                     )
                     record.update(
                         status="completed",

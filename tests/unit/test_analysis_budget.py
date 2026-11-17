@@ -65,7 +65,12 @@ class LiteralProvider:
                 "summary": [{"text": first["text"].strip(), "quote_ids": [first["quote_id"]]}],
                 "insights": [],
             }
-        return Generated(kwargs["schema"].model_validate(result), Settings.CHAT_MODEL, 100, 100)
+        model = (
+            Settings.ANALYSIS_REVIEW_MODEL
+            if issubclass(kwargs["schema"], AnalysisReviewOutput)
+            else Settings.CHAT_MODEL
+        )
+        return Generated(kwargs["schema"].model_validate(result), model, 100, 100)
 
 
 def short_passages(count: int) -> list[Chunk]:

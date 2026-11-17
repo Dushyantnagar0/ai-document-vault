@@ -109,6 +109,8 @@ def test_real_ingestion_atomic_outputs_and_replay(format: str) -> None:
             assert saved is not None
             review = saved.payload["evidence_review"]
             assert review["prompt_version"] == ANALYSIS_REVIEW_PROMPT_VERSION
+            assert review["model"] == get_settings().openai_analysis_review_model
+            assert review["reasoning_effort"] == "low"
             assert review["insight_prompt_version"] == "focused-insights-v2"
             assert review["quote_catalog_version"] == "literal-sentences-v2"
             assert review["decisions"]["decisions"] and review["quote_bindings"]
@@ -120,6 +122,11 @@ def test_real_ingestion_atomic_outputs_and_replay(format: str) -> None:
                 "final",
                 "insights",
                 "evidence_review",
+            ]
+            assert [call["model"] for call in usage["call_history"]] == [
+                get_settings().openai_chat_model,
+                get_settings().openai_chat_model,
+                get_settings().openai_analysis_review_model,
             ]
             assert usage["known_input_tokens"] == 300
             assert usage["known_output_tokens"] == 180

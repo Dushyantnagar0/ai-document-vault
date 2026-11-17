@@ -12,6 +12,7 @@ import pytest
 
 from app.db.models import ChatTurn
 from app.domain.conversation import Evidence
+from app.services.analysis import prepare_analysis_review
 from app.services.analysis_evidence import QuoteReference
 from app.services.analysis_review import ANALYSIS_REVIEW_PROMPT_VERSION, AnalysisReviewOutput
 from app.services.chat_context import answer_quote_catalog
@@ -442,6 +443,40 @@ def test_current_analysis_replay_applies_saved_insight_value_assessments() -> No
     assert result["payload"]["insights"] == []
     assert result["dropped_claim_ids"] == ("i1.1",)
     assert record == before
+
+
+@pytest.mark.parametrize(
+    "version", ["evidence-review-v9", "evidence-review-v10", ANALYSIS_REVIEW_PROMPT_VERSION]
+)
+def test_manifested_analysis_replay_preserves_historical_version_and_verdict(version: str) -> None:
+    record = analysis_record()
+    packet = prepare_analysis_review(
+        record["draft"],
+        {"q1": QuoteReference(UUID(int=1), "A hold blocks deletion until release.")},
+    )
+    record["request"].update(content=packet.content, prompt_version=version)
+    record["request_sha256"] = fingerprint(record["request"])
+    before = deepcopy(record)
+    result = replay_case(record)
+    assert result["review_prompt_version"] == version
+    assert result["paid_calls"] == 0
+    assert result["dropped_claim_ids"] == ("i1.1",)
+    assert result["payload"]["summary"][0]["text"] == record["draft"]["summary"][0]["text"]
+    assert record == before
+
+
+def test_manifested_replay_rejects_changed_candidate_identity() -> None:
+    record = analysis_record()
+    packet = prepare_analysis_review(
+        record["draft"],
+        {"q1": QuoteReference(UUID(int=1), "A hold blocks deletion until release.")},
+    )
+    content = json.loads(packet.content)
+    content["insight_candidates"][0]["block_index"] = 2
+    record["request"]["content"] = json.dumps(content)
+    record["request_sha256"] = fingerprint(record["request"])
+    with pytest.raises(ValueError, match="SAVED_CLAIMS_CHANGED"):
+        replay_case(record)
 
 
 @pytest.mark.parametrize("current", [True, False])

@@ -465,7 +465,9 @@ def process_document(
                 engine,
                 claim,
                 OpenAIGenerationProvider(
-                    settings, reasoning_effort=settings.openai_review_reasoning_effort
+                    settings,
+                    model=settings.openai_analysis_review_model,
+                    reasoning_effort=settings.ANALYSIS_REVIEW_REASONING_EFFORT,
                 ),
             ),
         )

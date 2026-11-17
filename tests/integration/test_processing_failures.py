@@ -238,6 +238,7 @@ def pipeline(
     class Generation:
         def __init__(self, settings: Settings, **options: Any) -> None:
             self.settings = settings
+            self.model = options.get("model", settings.openai_chat_model)
 
         def generate(self, **kwargs: Any) -> Generated[Any]:
             content = json.loads(kwargs["content"])
@@ -281,9 +282,7 @@ def pipeline(
                     ],
                     "insights": [],
                 }
-            return Generated(
-                kwargs["schema"].model_validate(payload), self.settings.openai_chat_model, 20, 20
-            )
+            return Generated(kwargs["schema"].model_validate(payload), self.model, 20, 20)
 
     monkeypatch.setattr("app.adapters.openai.OpenAIEmbeddingProvider", Embeddings)
     monkeypatch.setattr("app.adapters.openai.OpenAIGenerationProvider", Generation)

@@ -35,6 +35,7 @@ from app.db.models import ChatTurn, Document, DocumentChunk, DocumentInsights, P
 from app.prompts.analysis import ANALYSIS_PROMPT_VERSION
 from app.prompts.chat import ANSWER_PROMPT_VERSION, CHAT_PIPELINE_VERSION, PLANNER_PROMPT_VERSION
 from app.services.source_answer import SOURCE_COMPOSITION_VERSION, SOURCE_SELECTION_VERSION
+from scripts.analysis_evaluation_profile import expected_review_profile, observed_review_profile
 from scripts.evaluation_fixtures import (
     BY_ID,
     CASES,
@@ -159,6 +160,7 @@ def expected_versions(settings: Settings, *, intent: str | None = None) -> dict[
     """
     versions: dict[str, Any] = {
         "saved_analysis_prompt": ANALYSIS_PROMPT_VERSION,
+        "saved_analysis_review": expected_review_profile(settings),
         "chat_model": settings.openai_chat_model,
         "embedding_model": settings.openai_embedding_model,
         "planner_prompt": PLANNER_PROMPT_VERSION,
@@ -572,10 +574,13 @@ class EvaluationRunner:
                     if code != 200 or (
                         analysis.get("prompt_version") != ANALYSIS_PROMPT_VERSION
                         or analysis.get("model") != self.settings.openai_chat_model
+                        or observed_review_profile(analysis.get("analysis", {}))
+                        != expected_review_profile(self.settings)
                     ):
                         raise EvaluationFailure("DOCUMENT_ANALYSIS_STALE_USE_NEW_RUN_ID")
                     known["analysis_prompt"] = analysis["prompt_version"]
                     known["analysis_model"] = analysis["model"]
+                    known["analysis_review"] = observed_review_profile(analysis["analysis"])
                     self.save()
                 return identifier
             if body["status"] == "FAILED":
@@ -691,11 +696,13 @@ class EvaluationRunner:
             )
             versions = dict(turn.versions or {})
             versions["saved_analysis_prompt"] = None
+            versions["saved_analysis_review"] = {}
             # Observe the published analysis even for factual queries. A current
             # chat prompt does not make an older ingestion result current.
             analysis = database.get(DocumentInsights, document.id)
             if analysis is not None and analysis.attempt_id == document.published_attempt_id:
                 versions["saved_analysis_prompt"] = analysis.prompt_version
+                versions["saved_analysis_review"] = observed_review_profile(analysis.payload)
             usage = database.scalars(
                 select(PerformanceSample)
                 .where(PerformanceSample.turn_id == turn.id)

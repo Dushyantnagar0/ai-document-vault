@@ -105,7 +105,7 @@ class RepairReviewer:
         # A deliberate raw invalid response exercises local schema revalidation.
         # The real adapter can reject it earlier through the same bound schema.
         result = raw if scenario == "invalid_identity" else kwargs["schema"].model_validate(raw)
-        return Generated(result, Settings.CHAT_MODEL, 300, 300)
+        return Generated(result, Settings.ANALYSIS_REVIEW_MODEL, 300, 300)
 
 
 @pytest.mark.parametrize(

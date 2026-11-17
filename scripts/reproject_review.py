@@ -16,6 +16,7 @@ from app.core.config import get_settings
 from app.db.models import ChatTurn, DocumentChunk
 from app.domain.conversation import Evidence
 from app.domain.documents import SourceSpan
+from app.services.analysis import prepare_analysis_review
 from app.services.analysis_evidence import QuoteReference
 from app.services.analysis_review import (
     ANALYSIS_REVIEW_PROMPT_VERSION,
@@ -163,7 +164,11 @@ def restore_packet(record: dict[str, Any]) -> ReviewPacket:
     }
     if len(catalog) != len(items):
         raise ValueError("DUPLICATE_SAVED_QUOTE_ID")
-    packet = prepare_review(record["draft"], catalog, question=content["question"])
+    packet = (
+        prepare_analysis_review(record["draft"], catalog)
+        if "insight_candidates" in content
+        else prepare_review(record["draft"], catalog, question=content["question"])
+    )
     if "retrieval_query" in content:
         query = content["retrieval_query"]
         if not isinstance(query, str) or len(query) > 4000:
@@ -173,7 +178,7 @@ def restore_packet(record: dict[str, Any]) -> ReviewPacket:
         packet = replace(
             packet, content=json.dumps(restored, ensure_ascii=False, separators=(",", ":"))
         )
-    if source_index is not None:
+    if source_index is not None and "insight_candidates" not in content:
         packet = compact_chat_packet(packet)
     if json.loads(packet.content) != content:
         raise ValueError("SAVED_CLAIMS_CHANGED")
@@ -212,6 +217,8 @@ def replay_case(
             "evidence-review-v6",
             "evidence-review-v7",
             "evidence-review-v8",
+            "evidence-review-v9",
+            "evidence-review-v10",
             ANALYSIS_REVIEW_PROMPT_VERSION,
         }
         or "insight_assessments" in record["review"]

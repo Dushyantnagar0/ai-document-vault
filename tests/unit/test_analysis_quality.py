@@ -121,7 +121,7 @@ class Reviewer:
                     ],
                 }
             ),
-            model=Settings.CHAT_MODEL,
+            model=Settings.ANALYSIS_REVIEW_MODEL,
             input_tokens=300,
             output_tokens=300,
         )
@@ -168,6 +168,13 @@ def test_final_summary_freezes_before_distinct_insights_and_review() -> None:
     assert result.payload["usage"]["known_output_tokens"] == 600
     review = result.payload["evidence_review"]
     assert review["prompt_version"] == ANALYSIS_REVIEW_PROMPT_VERSION
+    assert review["model"] == Settings.ANALYSIS_REVIEW_MODEL
+    assert review["reasoning_effort"] == "low"
+    assert [call["model"] for call in history] == [
+        Settings.CHAT_MODEL,
+        Settings.CHAT_MODEL,
+        Settings.ANALYSIS_REVIEW_MODEL,
+    ]
     assert review["projection_version"] == PROJECTION_VERSION
     assert review["insight_value_projection_version"] == INSIGHT_VALUE_PROJECTION_VERSION
     assert review["decisions"]["insight_assessments"][0]["classification"] == "adds_conclusion"
@@ -535,7 +542,7 @@ def test_local_review_schema_validation_failure_is_repairable() -> None:
             if not self.calls:
                 self.calls.append(kwargs)
                 return Generated(
-                    {"unexpected": "invalid-schema-canary"}, Settings.CHAT_MODEL, 101, 51
+                    {"unexpected": "invalid-schema-canary"}, Settings.ANALYSIS_REVIEW_MODEL, 101, 51
                 )
             return super().generate(**kwargs)
 
@@ -582,3 +589,41 @@ def test_missing_insight_assessment_repairs_same_frozen_packet_once() -> None:
     assert first["error_code"] == "ai_schema_invalid"
     assert first["diagnostics"]["reason"] == "schema_validation"
     assert result.payload["insights"]
+
+
+@pytest.mark.parametrize("stage", ["insights", "evidence_review"])
+def test_quality_roles_reject_wrong_model_without_repair(stage: str) -> None:
+    """A valid structured result from the other role must never be published."""
+    draft, insights, reviewer = DraftGenerator(), InsightGenerator(), Reviewer()
+    delegate = insights if stage == "insights" else reviewer
+
+    class WrongModel:
+        def generate(self, **kwargs: Any) -> Generated[Any]:
+            response = delegate.generate(**kwargs)
+            return Generated(
+                response.result,
+                Settings.ANALYSIS_REVIEW_MODEL if stage == "insights" else Settings.CHAT_MODEL,
+                response.input_tokens,
+                response.output_tokens,
+            )
+
+    reservations: list[bool] = []
+
+    def reserve() -> float:
+        reservations.append(True)
+        return 30
+
+    with pytest.raises(ProcessingError) as failure:
+        analyse_document(
+            source(),
+            config(openai_review_reasoning_effort="none"),
+            draft,
+            reserve,
+            insight_generator=WrongModel() if stage == "insights" else insights,
+            reviewer=WrongModel() if stage == "evidence_review" else reviewer,
+        )
+    assert failure.value.code == "ai_model_mismatch"
+    assert len(delegate.calls) == 1
+    assert len(reservations) == (2 if stage == "insights" else 3)
+    if stage == "insights":
+        assert not reviewer.calls

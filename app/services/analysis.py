@@ -364,9 +364,11 @@ class _QualityGeneration:
         before_call: BeforeCall,
         calls: list[dict[str, Any]],
         stage: str,
+        expected_model: str,
     ) -> None:
         self.provider, self.settings, self.before_call = provider, settings, before_call
         self.calls, self.stage = calls, stage
+        self.expected_model = expected_model
 
     def generate(
         self,
@@ -407,7 +409,7 @@ class _QualityGeneration:
                 output_tokens=result.output_tokens,
                 model=result.model,
             )
-            if result.model != settings.openai_chat_model:
+            if result.model != self.expected_model:
                 raise ProcessingError("ai_model_mismatch", "Analysis model profile does not match.")
             if result.output_tokens is not None and result.output_tokens > max_output_tokens:
                 raise ProcessingError(
@@ -631,7 +633,14 @@ def analyse_document(
             candidates = generate_candidates(
                 payload["summary"],
                 catalog,
-                _QualityGeneration(insight_generator, settings, before_call, calls, "insights"),
+                _QualityGeneration(
+                    insight_generator,
+                    settings,
+                    before_call,
+                    calls,
+                    "insights",
+                    settings.openai_chat_model,
+                ),
                 # The proxy reserves immediately before the actual outbound call.
                 lambda: settings.openai_generation_timeout_seconds,
                 max_visible_tokens=settings.insight_max_visible_tokens,
@@ -650,7 +659,12 @@ def analyse_document(
                 previous_calls = len(calls)
                 try:
                     response = _QualityGeneration(
-                        reviewer, settings, before_call, calls, "evidence_review"
+                        reviewer,
+                        settings,
+                        before_call,
+                        calls,
+                        "evidence_review",
+                        settings.openai_analysis_review_model,
                     ).generate(
                         schema=review_schema,
                         system=ANALYSIS_REVIEW_SYSTEM
@@ -749,6 +763,8 @@ def analyse_document(
             ],
             evidence_review={
                 "prompt_version": ANALYSIS_REVIEW_PROMPT_VERSION,
+                "model": response.model,
+                "reasoning_effort": settings.ANALYSIS_REVIEW_REASONING_EFFORT,
                 "projection_version": PROJECTION_VERSION,
                 "insight_value_projection_version": INSIGHT_VALUE_PROJECTION_VERSION,
                 "insight_prompt_version": INSIGHT_PROMPT_VERSION,
