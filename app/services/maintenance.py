@@ -6,6 +6,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
+from time import monotonic
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -16,6 +17,8 @@ from app.db.models import Document, PerformanceSample
 from app.domain.documents import ProcessingError
 
 MAX_PERFORMANCE_DELETIONS = 1000
+MAX_PERFORMANCE_BATCHES = 100
+MAX_PERFORMANCE_CLEANUP_SECONDS = 5.0
 MAX_FILE_DELETIONS = 1000
 
 
@@ -24,6 +27,7 @@ class MaintenanceResult:
     """Confirmed deletions; unavailable DB stops all further filesystem deletion."""
 
     performance_samples_deleted: int = 0
+    performance_backlog_remaining: bool = False
     staging_deleted: int = 0
     originals_deleted: int = 0
     referenced_skipped: int = 0
@@ -72,7 +76,10 @@ async def run_maintenance(
     storage: LocalFileStorage,
     now: datetime | None = None,
 ) -> MaintenanceResult:
-    """Expire at most 1,000 samples and 1,000 unreferenced aged regular files.
+    """Expire samples in small transactions, plus at most 1,000 aged orphan files.
+
+    Telemetry deletion stops after 100 batches of 1,000 rows or five seconds
+    between batches; an in-flight DB operation can exceed that cooperative budget.
 
     Metadata scans may examine all current keys; referenced/busy entries do not
     consume the deletion budget or hide an orphan later in the scan. Original
@@ -83,9 +90,11 @@ async def run_maintenance(
         raise ValueError("Maintenance time must include a UTC offset")
     measured = measured.astimezone(UTC)
     result = MaintenanceResult()
+    cutoff = measured - timedelta(days=7)
+    cleanup_deadline = monotonic() + MAX_PERFORMANCE_CLEANUP_SECONDS
     expired_samples = (
         select(PerformanceSample.id)
-        .where(PerformanceSample.recorded_at < measured - timedelta(days=7))
+        .where(PerformanceSample.recorded_at < cutoff)
         .order_by(PerformanceSample.recorded_at, PerformanceSample.id)
         .limit(MAX_PERFORMANCE_DELETIONS)
         .with_for_update(skip_locked=True)
@@ -94,14 +103,31 @@ async def run_maintenance(
     try:
         async with engine.begin() as connection:
             referenced = set((await connection.scalars(select(Document.storage_key))).all())
-            removed = (
-                await connection.scalars(
-                    delete(PerformanceSample)
-                    .where(PerformanceSample.id.in_(select(expired_samples.c.id)))
-                    .returning(PerformanceSample.id)
+        for _ in range(MAX_PERFORMANCE_BATCHES):
+            if monotonic() >= cleanup_deadline:
+                break
+            async with engine.begin() as connection:
+                removed = (
+                    await connection.scalars(
+                        delete(PerformanceSample)
+                        .where(PerformanceSample.id.in_(select(expired_samples.c.id)))
+                        .returning(PerformanceSample.id)
+                    )
+                ).all()
+            result.performance_samples_deleted += len(removed)
+            if len(removed) < MAX_PERFORMANCE_DELETIONS:
+                break
+        # Existence is cheap even for a large backlog; include locked rows that
+        # another maintenance process may have caused the batches to skip.
+        async with engine.connect() as connection:
+            result.performance_backlog_remaining = (
+                await connection.scalar(
+                    select(PerformanceSample.id)
+                    .where(PerformanceSample.recorded_at < cutoff)
+                    .limit(1)
                 )
-            ).all()
-        result.performance_samples_deleted = len(removed)
+                is not None
+            )
     except SQLAlchemyError:
         result.database_available = False
         return result
@@ -112,8 +138,8 @@ async def run_maintenance(
     )
     for area, minimum_age in areas:
         try:
-            cutoff = (measured - minimum_age).timestamp()
-            candidates = await _offload(partial(storage.old_candidates, area, cutoff))
+            file_cutoff = (measured - minimum_age).timestamp()
+            candidates = await _offload(partial(storage.old_candidates, area, file_cutoff))
         except (ProcessingError, OSError):
             result.file_errors += 1
             continue
