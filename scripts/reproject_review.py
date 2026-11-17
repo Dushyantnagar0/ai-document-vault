@@ -208,7 +208,12 @@ def replay_case(
         )
     elif (
         prompt_version
-        in {"evidence-review-v6", "evidence-review-v7", ANALYSIS_REVIEW_PROMPT_VERSION}
+        in {
+            "evidence-review-v6",
+            "evidence-review-v7",
+            "evidence-review-v8",
+            ANALYSIS_REVIEW_PROMPT_VERSION,
+        }
         or "insight_assessments" in record["review"]
         or "insight_assessments" in properties
     ):

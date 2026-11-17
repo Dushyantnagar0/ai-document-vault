@@ -262,7 +262,7 @@ def test_complete_review_prompt_limit_prevents_reservation_and_request(monkeypat
         "generation_prompt_tokens",
         lambda schema, system, content: (
             Settings.CHAT_MODEL_MAX_INPUT_TOKENS + 1
-            if schema is AnalysisReviewOutput
+            if issubclass(schema, AnalysisReviewOutput)
             and any(claim["text"] for claim in json.loads(content)["claims"])
             else real_counter(schema, system, content)
         ),
@@ -577,8 +577,8 @@ def test_missing_insight_assessment_repairs_same_frozen_packet_once() -> None:
     )
     assert len(reviewer.calls) == 2
     assert reviewer.calls[0]["content"] == reviewer.calls[1]["content"]
-    assert all(call["schema"] is AnalysisReviewOutput for call in reviewer.calls)
+    assert all(issubclass(call["schema"], AnalysisReviewOutput) for call in reviewer.calls)
     first = result.payload["usage"]["call_history"][-2]
-    assert first["error_code"] == "EVIDENCE_REVIEW_INVALID"
-    assert first["diagnostics"]["reason"] == "insight_assessment_identity_mismatch"
+    assert first["error_code"] == "ai_schema_invalid"
+    assert first["diagnostics"]["reason"] == "schema_validation"
     assert result.payload["insights"]

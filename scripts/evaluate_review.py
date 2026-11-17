@@ -17,11 +17,13 @@ from app.adapters.openai import OpenAIGenerationProvider
 from app.core.config import get_settings
 from app.db.models import ChatTurn, Document, DocumentChunk, DocumentInsights
 from app.domain.documents import ProcessingError
+from app.services.analysis import prepare_analysis_review
 from app.services.analysis_evidence import QuoteReference, build_quote_catalog
 from app.services.analysis_review import (
     ANALYSIS_REVIEW_PROMPT_VERSION,
     ANALYSIS_REVIEW_SYSTEM,
     AnalysisReviewOutput,
+    analysis_review_schema,
     project_analysis_review,
 )
 from app.services.chat_review import (
@@ -179,13 +181,15 @@ def run(cases: Sequence[str], effort: Literal["none", "low"], run_id: str) -> di
                 is_chat = "answer" in packet.kinds
                 if not is_chat and len(draft.get("insights", [])) > 3:
                     raise ValueError("FROZEN_INSIGHT_COUNT_EXCEEDS_CURRENT_REVIEW_LIMIT")
-                schema = ChatReviewOutput if is_chat else AnalysisReviewOutput
+                if is_chat:
+                    packet = compact_chat_packet(packet)
+                else:
+                    packet = prepare_analysis_review(draft, catalog)
+                schema = ChatReviewOutput if is_chat else analysis_review_schema(packet)
                 system = CHAT_REVIEW_SYSTEM if is_chat else ANALYSIS_REVIEW_SYSTEM
                 prompt_version = (
                     CHAT_REVIEW_PROMPT_VERSION if is_chat else ANALYSIS_REVIEW_PROMPT_VERSION
                 )
-                if is_chat:
-                    packet = compact_chat_packet(packet)
                 request = {
                     "schema": schema.model_json_schema(),
                     "system": system,

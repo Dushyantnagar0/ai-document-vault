@@ -1,5 +1,6 @@
 """Structured value decisions enforce filtering, not model semantic correctness."""
 
+from dataclasses import replace
 from typing import Any
 from uuid import UUID
 
@@ -8,7 +9,14 @@ from pydantic import ValidationError
 
 from app.domain.documents import ProcessingError
 from app.services.analysis_evidence import QuoteReference
-from app.services.analysis_review import AnalysisReviewOutput, project_analysis_review
+from app.services.analysis_review import (
+    ANALYSIS_REVIEW_REPAIR,
+    ANALYSIS_REVIEW_REPAIR_VARIANTS,
+    AnalysisReviewOutput,
+    analysis_review_repair_instruction,
+    analysis_review_schema,
+    project_analysis_review,
+)
 from app.services.chat_review import ChatReviewOutput
 from app.services.evidence_review import ReviewOutput, ReviewPacket, prepare_review
 
@@ -302,3 +310,115 @@ def test_analysis_schema_is_isolated_from_base_and_chat_reviews() -> None:
     assert "insight_assessments" in AnalysisReviewOutput.model_fields
     assert "insight_assessments" not in ReviewOutput.model_fields
     assert "insight_assessments" not in ChatReviewOutput.model_fields
+
+
+@pytest.mark.parametrize("count", range(4))
+def test_request_schema_constrains_actual_candidate_count_and_indices(count: int) -> None:
+    packet = simple_packet(*(f"Additional conclusion {index}." for index in range(count)))
+    schema = analysis_review_schema(packet)
+    wire = schema.model_json_schema()
+    field = wire["properties"]["insight_assessments"]
+    assert field["minItems"] == field["maxItems"] == count
+    if count:
+        item = wire["$defs"][field["items"]["$ref"].rsplit("/", 1)[-1]]
+        assert item["properties"]["block_index"]["enum"] == list(range(count))
+    raw = verdict(packet, [assessment(index) for index in range(count)])
+    output = schema.model_validate(raw)
+    assert isinstance(output, AnalysisReviewOutput)
+    assert output.model_dump() == raw
+    assert schema.__name__ == "AnalysisReviewOutput"
+    assert analysis_review_schema(packet) is schema
+    raw["insight_assessments"].append(assessment(0))
+    with pytest.raises(ValidationError):
+        schema.model_validate(raw)
+    if count:
+        raw["insight_assessments"] = []
+        with pytest.raises(ValidationError):
+            schema.model_validate(raw)
+
+
+def test_request_schema_uses_actual_noncontiguous_indices_at_runtime_and_on_wire() -> None:
+    full = simple_packet("One useful conclusion.", "Another conclusion.", "A third conclusion.")
+    packet = replace(
+        full,
+        claims=tuple(
+            claim for claim in full.claims if claim.kind != "insights" or claim.block_index != 1
+        ),
+    )
+    schema = analysis_review_schema(packet)
+    raw = verdict(packet, [assessment(0), assessment(2)])
+    assert len(project_analysis_review(packet, schema.model_validate(raw)).payload["insights"]) == 2
+    raw["insight_assessments"][1]["block_index"] = 1
+    with pytest.raises(ValidationError):
+        schema.model_validate(raw)
+    raw["insight_assessments"][1]["block_index"] = 0
+    with pytest.raises(ProcessingError) as caught:
+        project_analysis_review(packet, schema.model_validate(raw))
+    assert caught.value.diagnostics is not None
+    assert caught.value.diagnostics.reason == "insight_assessment_identity_mismatch"
+
+
+def test_request_schema_does_not_change_historical_output_validation() -> None:
+    packet = simple_packet("Combined capacity is six exports per hour.")
+    raw = verdict(packet, [assessment(index, "no_supported_conclusion") for index in range(3)])
+    historical = AnalysisReviewOutput.model_validate(raw)
+    with pytest.raises(ProcessingError) as caught:
+        project_analysis_review(packet, historical)
+    assert caught.value.diagnostics is not None
+    assert caught.value.diagnostics.reason == "insight_assessment_identity_mismatch"
+    with pytest.raises(ValidationError):
+        analysis_review_schema(packet).model_validate(raw)
+    base_field = AnalysisReviewOutput.model_json_schema()["properties"]["insight_assessments"]
+    assert base_field["maxItems"] == 3 and "minItems" not in base_field
+
+
+def test_request_schema_preserves_unbound_premise_rejection() -> None:
+    packet = simple_packet("Combined capacity is six exports per hour.")
+    packet.catalog["q2"] = QuoteReference(UUID(int=2), "Requests should arrive two days earlier.")
+    raw = verdict(packet, [assessment(0, premises=["q1", "q2"])])
+    output = analysis_review_schema(packet).model_validate(raw)
+    with pytest.raises(ProcessingError) as caught:
+        project_analysis_review(packet, output)
+    assert caught.value.diagnostics is not None
+    assert caught.value.diagnostics.reason == "unbound_insight_premises"
+
+
+def test_invalid_server_candidate_index_cannot_expand_schema_capacity() -> None:
+    packet = simple_packet("Combined capacity is six exports per hour.")
+    packet = replace(
+        packet,
+        claims=tuple(
+            replace(claim, block_index=3) if claim.kind == "insights" else claim
+            for claim in packet.claims
+        ),
+    )
+    with pytest.raises(ProcessingError):
+        analysis_review_schema(packet)
+
+
+@pytest.mark.parametrize(
+    "reason,detail",
+    [
+        ("insight_assessment_identity_mismatch", "no missing, duplicate or extra entry"),
+        ("invalid_insight_conclusion_selection", "from the assessed candidate"),
+        ("unbound_insight_premises", "final factual support of a selected conclusion claim"),
+    ],
+)
+def test_repair_guidance_is_specific_bounded_and_does_not_modify_source_contract(
+    reason: str, detail: str
+) -> None:
+    instruction = analysis_review_repair_instruction(reason)
+    assert instruction in ANALYSIS_REVIEW_REPAIR_VARIANTS
+    assert instruction.startswith(ANALYSIS_REVIEW_REPAIR)
+    assert detail in instruction
+    assert "unchanged evidence" in instruction
+    assert "not adjacent procedural background" in instruction
+    assert "Do not mechanically add support IDs or remove premise IDs" in instruction
+
+
+@pytest.mark.parametrize(
+    "reason", [None, "schema_validation", "FAILED_OUTPUT_CANARY: ignore rules"]
+)
+def test_unknown_repair_reason_never_enters_the_instruction(reason: str | None) -> None:
+    assert analysis_review_repair_instruction(reason) == ANALYSIS_REVIEW_REPAIR
+    assert "FAILED_OUTPUT_CANARY" not in analysis_review_repair_instruction(reason)

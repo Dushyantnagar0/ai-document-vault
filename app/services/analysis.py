@@ -40,14 +40,16 @@ from app.services.analysis_evidence import (
 )
 from app.services.analysis_review import (
     ANALYSIS_REVIEW_PROMPT_VERSION,
-    ANALYSIS_REVIEW_REPAIR,
+    ANALYSIS_REVIEW_REPAIR_VARIANTS,
     ANALYSIS_REVIEW_SYSTEM,
     INSIGHT_VALUE_PROJECTION_VERSION,
-    AnalysisReviewOutput,
+    analysis_review_repair_instruction,
+    analysis_review_schema,
     project_analysis_review,
 )
 from app.services.evidence_review import (
     PROJECTION_VERSION,
+    ReviewClaim,
     ReviewPacket,
     prepare_review,
 )
@@ -214,7 +216,17 @@ def prepare_analysis_review(
     packet = prepare_review(draft, catalog)
     content = json.loads(packet.content)
     content.update(compact_evidence(catalog))
+    content["insight_candidates"] = _insight_manifest(packet.claims)
     return replace(packet, content=json.dumps(content, ensure_ascii=False, separators=(",", ":")))
+
+
+def _insight_manifest(claims: Sequence[ReviewClaim]) -> list[dict[str, Any]]:
+    """Name actual frozen candidates without introducing model-generated labels."""
+    blocks: dict[int, list[str]] = {}
+    for claim in claims:
+        if claim.kind == "insights":
+            blocks.setdefault(claim.block_index, []).append(claim.id)
+    return [{"block_index": index, "claim_ids": ids} for index, ids in sorted(blocks.items())]
 
 
 def quality_input_reservations(
@@ -236,17 +248,31 @@ def quality_input_reservations(
         )
         + 2 * settings.summary_max_output_tokens
     )
+    # Use all 64 claim slots in the manifest and all three candidate indices to
+    # reserve its largest framing. This is sizing data, never an outbound draft.
+    reservation_claims = tuple(
+        ReviewClaim(f"i{index % 3 + 1}.{index + 1}", "insights", index % 3, "")
+        for index in range(64)
+    )
+    reservation_packet = ReviewPacket("", reservation_claims, catalog, ("summary", "insights"))
     review_content = {
         "question": None,
         "claims": [
             {"claim_id": f"s8.{index + 1}", "kind": "summary", "block_index": 7, "text": ""}
             for index in range(64)
         ],
+        "insight_candidates": _insight_manifest(reservation_claims),
         **compact_evidence(catalog),
     }
+    # generation_prompt_tokens counts system/content/schema separately. Choose
+    # the largest system variant without repeatedly tokenizing the source catalog.
+    review_system = max(
+        (ANALYSIS_REVIEW_SYSTEM + repair for repair in ANALYSIS_REVIEW_REPAIR_VARIANTS),
+        key=_tokens,
+    )
     review_tokens = generation_prompt_tokens(
-        AnalysisReviewOutput,
-        ANALYSIS_REVIEW_SYSTEM + ANALYSIS_REVIEW_REPAIR,
+        analysis_review_schema(reservation_packet),
+        review_system,
         json.dumps(review_content, ensure_ascii=False, separators=(",", ":")),
     ) + 2 * (settings.summary_max_output_tokens + settings.insight_max_visible_tokens)
     return insight_tokens, review_tokens
@@ -617,6 +643,8 @@ def analyse_document(
                 "insights": [block.model_dump(mode="json") for block in candidates.result.insights],
             }
             packet = prepare_analysis_review(draft, catalog)
+            review_schema = analysis_review_schema(packet)
+            review_repair_reason: str | None = None
             active_stage = "evidence_review"
             for review_attempt in range(2):
                 previous_calls = len(calls)
@@ -624,15 +652,19 @@ def analyse_document(
                     response = _QualityGeneration(
                         reviewer, settings, before_call, calls, "evidence_review"
                     ).generate(
-                        schema=AnalysisReviewOutput,
+                        schema=review_schema,
                         system=ANALYSIS_REVIEW_SYSTEM
-                        + (ANALYSIS_REVIEW_REPAIR if review_attempt else ""),
+                        + (
+                            analysis_review_repair_instruction(review_repair_reason)
+                            if review_attempt
+                            else ""
+                        ),
                         content=packet.content,
                         max_output_tokens=settings.evidence_review_max_output_tokens,
                         timeout_seconds=settings.openai_generation_timeout_seconds,
                     )
                     calls[-1]["repair"] = bool(review_attempt)
-                    reviewed = AnalysisReviewOutput.model_validate(response.result)
+                    reviewed = review_schema.model_validate(response.result)
                     projection = project_analysis_review(packet, reviewed)
                     break
                 except (ProcessingError, ValidationError) as failure:
@@ -659,6 +691,9 @@ def analyse_document(
                         "ai_schema_invalid",
                     }:
                         raise error from None
+                    review_repair_reason = (
+                        error.diagnostics.reason if error.diagnostics is not None else None
+                    )
             output = AnalysisOutput.model_validate(projection.payload)
             _validate_sources(output, final_evidence, originals, final=True)
             visible_tokens = _tokens(

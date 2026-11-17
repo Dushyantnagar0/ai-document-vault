@@ -23,9 +23,10 @@ from app.services.analysis import (
 )
 from app.services.analysis_evidence import QuoteReference, SelectionOutput, build_quote_catalog
 from app.services.analysis_review import (
-    ANALYSIS_REVIEW_REPAIR,
+    ANALYSIS_REVIEW_REPAIR_VARIANTS,
     ANALYSIS_REVIEW_SYSTEM,
     AnalysisReviewOutput,
+    analysis_review_schema,
 )
 from app.services.insight_generation import INSIGHT_SYSTEM, InsightCandidates, candidate_content
 
@@ -44,7 +45,7 @@ class LiteralProvider:
         first = request["evidence"][0]
         if kwargs["schema"] is InsightCandidates:
             result: dict[str, Any] = {"insights": []}
-        elif kwargs["schema"] is AnalysisReviewOutput:
+        elif issubclass(kwargs["schema"], AnalysisReviewOutput):
             result = {
                 "decisions": [
                     {
@@ -165,9 +166,10 @@ def test_reservation_includes_maximum_claim_frames_generated_text_and_repair() -
     packet = prepare_analysis_review(draft, catalog)
     insight_reserve, review_reserve = quality_input_reservations(catalog, configured)
     assert len(packet.claims) == 64
-    assert review_reserve >= generation_prompt_tokens(
-        AnalysisReviewOutput, ANALYSIS_REVIEW_SYSTEM + ANALYSIS_REVIEW_REPAIR, packet.content
-    )
+    for repair in ANALYSIS_REVIEW_REPAIR_VARIANTS:
+        assert review_reserve >= generation_prompt_tokens(
+            analysis_review_schema(packet), ANALYSIS_REVIEW_SYSTEM + repair, packet.content
+        )
     assert insight_reserve >= generation_prompt_tokens(
         InsightCandidates, INSIGHT_SYSTEM, candidate_content(draft["summary"], catalog)
     )
